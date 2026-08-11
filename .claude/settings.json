@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(task test:*)", "Bash(task lint:*)", "Bash(task evals:*)",
+      "Bash(task lab:up)", "Bash(task lab:forward)",
+      "Bash(uv run:*)", "Bash(uv add:*)",
+      "Bash(git status)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git add:*)", "Bash(git commit:*)"
+    ],
+    "deny": [
+      "Bash(kubectl apply:*)", "Bash(kubectl delete:*)", "Bash(kubectl edit:*)", "Bash(kubectl patch:*)",
+      "Bash(helm install:*)", "Bash(helm upgrade:*)", "Bash(helm uninstall:*)",
+      "Bash(git push --force:*)", "Bash(git push origin main:*)",
+      "Read(.lab/**)"
+    ]
+  }
+}
