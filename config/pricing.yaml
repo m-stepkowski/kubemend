@@ -1,0 +1,27 @@
+# Model pricing in USD per 1M tokens, consumed by kubemend/trace/cost.py.
+#
+# Cached input is billed separately from fresh input, so it needs its own rate:
+# with prompt caching on from day one (ARCHITECTURE.md §2.7) most of a run's
+# input tokens are cache reads, and pricing them at the full input rate
+# overstates every cost figure in the eval report.
+#
+# Cache writes cost 1.25x input at the default 5-minute TTL; cache reads cost
+# 0.1x input. Verify these numbers against a real invoice once, early — the
+# whole cost-guardrail story in IMPLEMENTATION_PLAN.md depends on them.
+#
+# NOTE: Sonnet 5 carries introductory pricing of $2.00 / $10.00 through
+# 2026-08-31. The list price below is therefore a ceiling until then; runs
+# during the intro window cost less than the report claims.
+
+models:
+  claude-sonnet-5:
+    input: 3.00
+    output: 15.00
+    cache_write_5m: 3.75
+    cache_read: 0.30
+
+  claude-haiku-4-5:
+    input: 1.00
+    output: 5.00
+    cache_write_5m: 1.25
+    cache_read: 0.10
