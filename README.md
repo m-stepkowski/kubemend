@@ -104,4 +104,4 @@ Not yet open for external contributions — first getting v0.1's harness and eva
 
 ## License
 
-[Apache 2.0](LICENSE) (or your preference — update before publishing).
+[Apache 2.0](LICENSE)
