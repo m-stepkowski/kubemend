@@ -1,0 +1,53 @@
+version: "3"
+
+vars:
+  # Pinned tool binaries. The validator and lab bootstrap must use these
+  # versions, never whatever happens to be on PATH (see CLAUDE.md).
+  HELM_VERSION: v3.16.3
+  KYVERNO_VERSION: v1.13.2
+  KIND_VERSION: v0.25.0
+  ARGOCD_VERSION: v2.13.1
+
+tasks:
+  test:
+    desc: Unit tests (hermetic, no cluster, no network)
+    cmds:
+      - uv run pytest {{.CLI_ARGS}}
+
+  test:lab:
+    desc: Integration tests against the lab cluster (requires task lab:up)
+    cmds:
+      - uv run pytest -m lab {{.CLI_ARGS}}
+
+  lint:
+    desc: ruff check + ruff format --check + mypy --strict (zero warnings)
+    cmds:
+      - uv run ruff check .
+      - uv run ruff format --check .
+      - uv run mypy
+
+  fmt:
+    desc: Apply ruff formatting and safe autofixes
+    cmds:
+      - uv run ruff format .
+      - uv run ruff check --fix .
+
+  evals:
+    desc: "Run an eval sweep, e.g. task evals -- -s bad-image-tag -n 1 --model cheap"
+    cmds:
+      - uv run kubemend evals {{.CLI_ARGS}}
+
+  lab:up:
+    desc: Bring up the kind lab cluster (M2)
+    cmds:
+      - cmd: echo "lab:up is implemented in M2 (see IMPLEMENTATION_PLAN.md)" >&2 && exit 1
+
+  lab:down:
+    desc: Tear down the kind lab cluster (M2)
+    cmds:
+      - cmd: echo "lab:down is implemented in M2 (see IMPLEMENTATION_PLAN.md)" >&2 && exit 1
+
+  lab:forward:
+    desc: Port-forward Prometheus/Loki/gitea/Argo to localhost (M2)
+    cmds:
+      - cmd: echo "lab:forward is implemented in M2 (see IMPLEMENTATION_PLAN.md)" >&2 && exit 1
