@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Lab credentials and generated kubeconfigs (never committed)
+.lab/
+
+# Per-run JSONL traces
+traces/
