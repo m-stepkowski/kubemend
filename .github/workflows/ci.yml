@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: go-task/setup-task@v1
+        with:
+          version: 3.x
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      # ruff check + ruff format --check + mypy --strict, zero warnings.
+      - name: Lint and typecheck
+        run: task lint
+
+      # Unit tests only; `lab`-marked integration tests need a kind cluster
+      # and are excluded by the default pytest addopts.
+      - name: Unit tests
+        run: task test
