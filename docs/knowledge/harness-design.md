@@ -17,6 +17,8 @@ Authoritative companion to ARCHITECTURE.md §2 for anyone (human or Claude Code)
 | `result_token_cap` | 6,000 tok | Big enough for a useful log window; small enough that 10 exchanges fit a run cheaply. |
 | Truncation split | head 60 / tail 40 | Errors cluster at both ends of a log/query window; head-only loses final stack traces. |
 | `compact_threshold` | 0.70 × window | Leaves room for one large exchange + verification failure after the trigger. |
+| `model_window_tokens` | 200,000 | The denominator `compact_threshold` is a fraction of. Configured rather than derived so a model swap cannot silently change when compaction fires. |
+| Token estimate | 4 bytes ≈ 1 token | Truncation and compaction are threshold checks with slack either side, so a byte-length estimate beats a tokenizer round-trip per call. Revisit if a scenario trips a threshold it should not. |
 | Compaction target | ≤600 tok summary of oldest 50% | Must include "queries already run" so re-query loops stay detectable. |
 | Loop detector | nudge@2, abort@3 identical `(name, canonical_args)` | Most common real failure in week one; identical-args repetition is never productive. |
 | `max_iterations` | 15 | Positive scenarios converge in 4–9; 15 gives retry headroom after one gate failure. |

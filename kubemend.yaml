@@ -16,6 +16,9 @@ budgets:
 context:
   result_token_cap: 6000
   compact_threshold: 0.70
+  # The threshold is a fraction of the model window, so the window has to be
+  # stated alongside the model that defines it.
+  model_window_tokens: 200000
 
 observability:
   provider: prometheus_loki
