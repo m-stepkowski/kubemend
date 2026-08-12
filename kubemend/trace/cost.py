@@ -67,5 +67,6 @@ def usd(usage: Usage, price: ModelPrice) -> float:
     return (
         usage.input_tokens * price.input
         + usage.cached_input_tokens * price.cache_read
+        + usage.cache_creation_tokens * price.cache_write_5m
         + usage.output_tokens * price.output
     ) / 1_000_000
