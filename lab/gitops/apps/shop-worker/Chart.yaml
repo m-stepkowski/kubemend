@@ -1,0 +1,6 @@
+apiVersion: v2
+name: shop-worker
+description: Background worker with a tunable memory appetite, for OOM scenarios.
+type: application
+version: 0.1.0
+appVersion: "1.36"

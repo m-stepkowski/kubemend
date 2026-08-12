@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Chart.Name }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/managed-by: kubemend-lab
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Allocate the configured amount into a memory-backed emptyDir and hold
+          # it, then log a heartbeat.
+          #
+          # The ballast deliberately does NOT go to /dev/shm: the runtime caps
+          # that at 64Mi regardless of the container's memory limit, so a large
+          # allocation there fails with "No space left on device" instead of
+          # being OOM-killed. A `medium: Memory` emptyDir counts against the
+          # container's limit, which is what makes the OOM reproducible.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "shop-worker starting, allocating {{ .Values.workload.allocateMb }}Mi"
+              dd if=/dev/zero of=/ballast/block bs=1M count={{ .Values.workload.allocateMb }} 2>/dev/null
+              echo "allocation complete, entering heartbeat loop"
+              while true; do
+                echo "worker heartbeat, queue depth 0"
+                sleep {{ .Values.workload.heartbeatSeconds }}
+              done
+          volumeMounts:
+            - name: ballast
+              mountPath: /ballast
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: ballast
+          emptyDir:
+            medium: Memory

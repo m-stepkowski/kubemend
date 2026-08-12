@@ -1,0 +1,47 @@
+# Base values for shop-api.
+#
+# Every knob a fault-injection scenario needs to break lives here, because the
+# agent may only edit values files (ARCHITECTURE.md §4.1). If a scenario needs a
+# change that cannot be expressed below, that is a `fix_not_expressible_in_values`
+# handoff by design, not a gap to paper over.
+
+replicaCount: 2
+
+image:
+  repository: nginxinc/nginx-unprivileged
+  # Never `latest`: the policy pack rejects it, and a floating tag makes the
+  # bad-image-tag scenario meaningless.
+  tag: "1.27-alpine"
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8080
+
+# Probe paths are values so `bad-probe-path` can point them at a 404.
+probes:
+  readiness:
+    path: /
+    initialDelaySeconds: 3
+    periodSeconds: 5
+  liveness:
+    path: /
+    initialDelaySeconds: 10
+    periodSeconds: 10
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
+
+# Consumed by the app as environment variables. `bad-env-endpoint` points
+# UPSTREAM_URL at something unreachable so the logs fill with connection errors.
+env:
+  LOG_LEVEL: info
+  UPSTREAM_URL: http://shop-worker.shop.svc.cluster.local:9090
+
+# Optional ConfigMap keys mounted into the pod; `missing-configmap-key` removes
+# one the container requires.
+config:
+  FEATURE_FLAGS: "checkout_v2=on"

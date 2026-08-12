@@ -1,0 +1,26 @@
+# Base values for shop-worker.
+#
+# The worker allocates `workload.allocateMb` of memory and holds it. Set that
+# above `resources.limits.memory` and the kernel OOM-kills the container, which
+# is exactly what the `oom-limit` scenario does — and the fix the agent is
+# expected to find is raising the limit here.
+
+replicaCount: 1
+
+image:
+  repository: busybox
+  tag: "1.36"
+  pullPolicy: IfNotPresent
+
+workload:
+  # Megabytes the worker allocates on start and keeps resident.
+  allocateMb: 48
+  # Seconds between heartbeat log lines, so Loki always has something to show.
+  heartbeatSeconds: 10
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    memory: 128Mi
