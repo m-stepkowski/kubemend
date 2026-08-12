@@ -91,10 +91,24 @@ def run(
     ],
     app_name: Annotated[str, typer.Option("--app", help="Application the incident is scoped to")],
     window: Annotated[str, typer.Option("--window", help="Time window of interest")] = "-30m",
+    model: Annotated[
+        str, typer.Option("--model", help="Which tier drives agent turns: main | cheap")
+    ] = "main",
     config: Annotated[Path, typer.Option("--config")] = Path("kubemend.yaml"),
 ) -> None:
     """Diagnose an incident and propose a fix (read-only until M3)."""
     cfg = load_config(config)
+    if model == "cheap":
+        # Point the main tier at the cheap model rather than teaching the loop
+        # about a third tier: the loop asks for "main" for agent turns and
+        # "cheap" for compaction and handoff, and that split stays meaningful.
+        # Same vocabulary the eval runner uses (`--model cheap|main`).
+        cfg.model.main = cfg.model.cheap.model_copy(
+            update={"max_cost_usd_per_run": cfg.model.main.max_cost_usd_per_run}
+        )
+    elif model != "main":
+        typer.echo(f"--model must be 'main' or 'cheap', got {model!r}", err=True)
+        raise typer.Exit(code=2)
     incident = Task(statement=task, scope=Scope(namespace=namespace, app=app_name), window=window)
     trace = TraceRecorder.open(Path("traces") / f"{uuid.uuid4().hex[:12]}.jsonl")
 
@@ -121,11 +135,13 @@ def run(
         gate=ReadOnlyGate(),
         trace=trace,
     )
-    _report(result)
+    _report(result, model_name=cfg.model.main.name)
 
 
-def _report(result: RunResult) -> None:
-    typer.echo(f"\nreason:     {result.reason}")
+def _report(result: RunResult, *, model_name: str = "") -> None:
+    if model_name:
+        typer.echo(f"\nmodel:      {model_name}")
+    typer.echo(f"reason:     {result.reason}")
     typer.echo(f"iterations: {result.iterations}")
     typer.echo(f"cost:       ${result.cost_usd:.4f}")
     typer.echo(f"trace:      {result.trace_path}")
