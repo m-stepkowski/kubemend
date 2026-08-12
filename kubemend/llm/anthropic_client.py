@@ -81,12 +81,23 @@ class AnthropicClient:
         )
 
 
+CACHE_CONTROL = {"type": "ephemeral"}
+
+
 def _split(messages: list[Message]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Separate the pinned system prefix from the conversation turns.
 
-    The cache breakpoint goes on the last pinned block: everything before it is
-    byte-stable across iterations, so each turn reads the prefix from cache
-    instead of paying full input price for it (§2.7).
+    Two breakpoints, per §2.7, and both are needed:
+
+    * one on the last pinned system block, covering the byte-stable
+      system + task prefix;
+    * one on the final conversation turn, so the *next* request reads the whole
+      accumulated investigation from cache.
+
+    The second is the one that matters on this workload. Caching only the system
+    block leaves the growing message list to be re-read at full price every
+    turn, which on the first live run meant 28k cached tokens against 256k input
+    — roughly 11%, where an appended-only conversation should approach 90%.
     """
     system_blocks: list[dict[str, Any]] = []
     turns: list[dict[str, Any]] = []
@@ -101,11 +112,18 @@ def _split(messages: list[Message]) -> tuple[list[dict[str, Any]], list[dict[str
             if message.role == "system"
             else message.content
         )
-        turns.append({"role": role, "content": content})
+        turns.append({"role": role, "content": [{"type": "text", "text": content}]})
 
     if system_blocks:
-        system_blocks[-1]["cache_control"] = {"type": "ephemeral"}
+        system_blocks[-1]["cache_control"] = dict(CACHE_CONTROL)
+
     # The API requires the conversation to open with a user turn.
     if not turns or turns[0]["role"] != "user":
-        turns.insert(0, {"role": "user", "content": "Begin the investigation."})
+        turns.insert(
+            0, {"role": "user", "content": [{"type": "text", "text": "Begin the investigation."}]}
+        )
+
+    # Breakpoint on the last block of the most recent turn. Everything before it
+    # is append-only and therefore byte-stable, which is what makes it cacheable.
+    turns[-1]["content"][-1]["cache_control"] = dict(CACHE_CONTROL)
     return system_blocks, turns
