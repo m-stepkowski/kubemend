@@ -50,7 +50,14 @@ Executor: `/loki/api/v1/query_range`; payload = `{streams: [{labels, lines: [[ts
   "required": ["kind", "namespace"]}}
 ```
 
-Executor: kubernetes client on the **generated read-only kubeconfig**; strips `managedFields`/`last-applied` noise; configmaps return key names + value byte-lengths only; pod specs pass env-var redaction (values → `<redacted:NAME>` unless allow-listed); events sorted by lastTimestamp desc, capped 30. Non-allow-listed kind ⇒ `{"error":{"type":"forbidden_kind", ...}}`.
+Executor: kubernetes client on the **generated read-only kubeconfig**; strips `managedFields`/`last-applied` noise; configmaps return key names + value byte-lengths only; pod specs pass env-var redaction (values → `<redacted:NAME>` unless allow-listed); events sorted by lastTimestamp desc, capped 30.
+
+Two layers reject a disallowed kind, and which one fires depends on the caller:
+
+* **Through the registry** (how the model always reaches it): the `kind` enum above fails schema validation first, so the model gets `{"error":{"type":"invalid_arguments", ...}}` naming the allowed values, and the executor never runs. This is the desirable order — it costs nothing and the enum is also what steers the model toward valid kinds in the first place.
+* **Calling the reader directly** (tests, future internal callers): `KubernetesReader.get_state` raises `ForbiddenKind`, surfacing as `{"error":{"type":"forbidden_kind", ...}}`.
+
+Neither is the security boundary. The ServiceAccount in `lab/bootstrap/rbac.yaml` holds no verbs on `secrets` at all, so both layers are defence in depth over an identity that cannot make the request.
 
 ## propose_git_change  (tier: propose, timeout 30s)
 
