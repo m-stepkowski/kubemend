@@ -1,0 +1,19 @@
+# Log shipper for the lab (ARCHITECTURE.md §6).
+#
+# Without this Loki answers queries correctly and returns nothing, because
+# nothing is writing to it. The `missing-configmap-key` and `bad-env-endpoint`
+# scenarios are entirely dependent on app logs reaching Loki, so this is
+# load-bearing rather than optional telemetry.
+
+config:
+  clients:
+    - url: http://loki.observability.svc.cluster.local:3100/loki/api/v1/push
+
+resources:
+  requests: {cpu: 25m, memory: 64Mi}
+  limits: {memory: 192Mi}
+
+# One DaemonSet pod on the single node; no service monitor needed since the
+# agent never reads promtail's own metrics.
+serviceMonitor:
+  enabled: false

@@ -1,0 +1,76 @@
+# Single-binary Loki on filesystem storage (ARCHITECTURE.md §6).
+#
+# The distributed deployment mode would add read/write/backend statefulsets and
+# a cache tier for a cluster that holds minutes of logs from two demo apps.
+# SingleBinary is the mode Loki documents for exactly this case.
+
+deploymentMode: SingleBinary
+
+loki:
+  auth_enabled: false
+  commonConfig:
+    replication_factor: 1
+  storage:
+    type: filesystem
+  schemaConfig:
+    configs:
+      - from: "2024-04-01"
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+  limits_config:
+    retention_period: 24h
+    # The executor clamps to 500 lines, but a server-side ceiling means a
+    # hand-run query cannot flood the cluster either.
+    max_entries_limit_per_query: 5000
+
+singleBinary:
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 600Mi}
+  # Must stay enabled. The container root filesystem is read-only, so without
+  # this volume Loki cannot create /var/loki and dies in CrashLoopBackOff with
+  # "mkdir /var/loki: read-only file system" while initialising ruler-storage.
+  # kind provides a default `standard` StorageClass, so this needs no setup.
+  persistence:
+    enabled: true
+    size: 2Gi
+
+# Everything below belongs to the distributed modes; explicitly zeroed so a
+# chart default cannot quietly schedule an extra pod.
+backend: {replicas: 0}
+read: {replicas: 0}
+write: {replicas: 0}
+ingester: {replicas: 0}
+querier: {replicas: 0}
+queryFrontend: {replicas: 0}
+queryScheduler: {replicas: 0}
+distributor: {replicas: 0}
+compactor: {replicas: 0}
+indexGateway: {replicas: 0}
+bloomCompactor: {replicas: 0}
+bloomGateway: {replicas: 0}
+
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+
+lokiCanary:
+  enabled: false
+
+# No alerting rules in the lab, so the rules sidecar is one container per pod
+# doing nothing.
+sidecar:
+  rules:
+    enabled: false
+
+test:
+  enabled: false
+
+gateway:
+  enabled: false

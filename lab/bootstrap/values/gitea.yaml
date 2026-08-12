@@ -1,0 +1,48 @@
+# Minimal gitea for the lab (ARCHITECTURE.md §6).
+#
+# gitea hosts the lab GitOps repo, which is what keeps the whole loop
+# offline-capable — no GitHub account needed to run the evals. The chart
+# defaults to an HA Postgres plus a Redis/Valkey cluster; for a single-user lab
+# repo that is several hundred MB of pods to serve a handful of commits.
+#
+# Both the old (redis) and new (valkey) dependency names are disabled: which one
+# the chart uses depends on its major version, and an unknown key is ignored
+# rather than an error, so setting both is safe and version-proof.
+
+redis-cluster:
+  enabled: false
+redis:
+  enabled: false
+valkey-cluster:
+  enabled: false
+valkey:
+  enabled: false
+postgresql:
+  enabled: false
+postgresql-ha:
+  enabled: false
+
+persistence:
+  enabled: true
+  size: 2Gi
+
+resources:
+  requests: {cpu: 100m, memory: 256Mi}
+  limits: {memory: 600Mi}
+
+gitea:
+  admin:
+    username: kubemend
+    email: lab@kubemend.local
+    # password comes from --set at install time, generated into .lab/
+  config:
+    database:
+      DB_TYPE: sqlite3
+    server:
+      OFFLINE_MODE: true
+    service:
+      DISABLE_REGISTRATION: true
+    # Argo CD and the harness both talk to gitea over plain HTTP inside the
+    # cluster; there is no TLS to terminate and no public exposure.
+    security:
+      INSTALL_LOCK: true

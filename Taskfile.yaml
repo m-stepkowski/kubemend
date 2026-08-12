@@ -2,11 +2,50 @@ version: "3"
 
 vars:
   # Pinned tool binaries. The validator and lab bootstrap must use these
-  # versions, never whatever happens to be on PATH (see CLAUDE.md).
+  # versions, never whatever happens to be on PATH (see CLAUDE.md). They are
+  # downloaded into .lab/bin by `task lab:tools`.
   HELM_VERSION: v3.16.3
   KYVERNO_VERSION: v1.13.2
   KIND_VERSION: v0.25.0
   ARGOCD_VERSION: v2.13.1
+  KUBECTL_VERSION: v1.31.3
+  # Matched to KUBECTL_VERSION so `kubectl diff --server-side` in the M3
+  # validator never talks to a server it is a minor version away from.
+  KIND_NODE_IMAGE: kindest/node:v1.31.2
+
+  # Chart versions pinned to what a clean install resolved on 2026-08-12.
+  # Unpinned charts silently change the lab between runs and break the
+  # reproducibility claim the eval reports rest on.
+  KPS_CHART_VERSION: 88.3.0
+  LOKI_CHART_VERSION: 7.3.0
+  GITEA_CHART_VERSION: 12.7.0
+  ARGOCD_CHART_VERSION: 7.7.11
+  PROMTAIL_CHART_VERSION: 6.16.6
+  KYVERNO_CHART_VERSION: 3.3.4
+
+  # Consumed by kubemend.yaml; the agent process holds this and nothing else.
+  READONLY_KUBECONFIG:
+    sh: echo "$HOME/.kube/kubemend-lab-readonly"
+
+  CLUSTER_NAME: kubemend
+  LAB_BIN: '{{.ROOT_DIR}}/.lab/bin'
+  KUBECONFIG_ADMIN: '{{.ROOT_DIR}}/.lab/kubeconfig'
+  # kind/helm/argocd/kubectl all use Go's naming (darwin/arm64); kyverno's
+  # release assets use the same, so one pair covers every download below.
+  OS:
+    sh: uname -s | tr '[:upper:]' '[:lower:]'
+  ARCH:
+    sh: uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/'
+
+env:
+  # Rancher Desktop puts its socket in ~/.rd, Docker Desktop in /var/run. An
+  # unset DOCKER_HOST makes the CLI look only at the latter and report "is the
+  # daemon running?" on a perfectly healthy Rancher install.
+  DOCKER_HOST:
+    sh: |
+      if [ -n "${DOCKER_HOST:-}" ]; then echo "$DOCKER_HOST"
+      elif [ -S "$HOME/.rd/docker.sock" ]; then echo "unix://$HOME/.rd/docker.sock"
+      else echo "unix:///var/run/docker.sock"; fi
 
 tasks:
   test:
@@ -37,17 +76,319 @@ tasks:
     cmds:
       - uv run kubemend evals {{.CLI_ARGS}}
 
-  lab:up:
-    desc: Bring up the kind lab cluster (M2)
+  # -- pinned tool binaries ------------------------------------------------
+
+  lab:tools:
+    desc: Download the pinned helm/kind/kubectl/kyverno/argocd binaries into .lab/bin
     cmds:
-      - cmd: echo "lab:up is implemented in M2 (see IMPLEMENTATION_PLAN.md)" >&2 && exit 1
+      - mkdir -p {{.LAB_BIN}}
+      - task: tool:helm
+      - task: tool:kind
+      - task: tool:kubectl
+      - task: tool:kyverno
+      - task: tool:argocd
+      - '{{.LAB_BIN}}/helm version --short'
+      - '{{.LAB_BIN}}/kind --version'
+      - '{{.LAB_BIN}}/kubectl version --client=true -o yaml | grep gitVersion | head -1'
+
+  tool:helm:
+    internal: true
+    status:
+      - test -x {{.LAB_BIN}}/helm && {{.LAB_BIN}}/helm version --short | grep -q {{.HELM_VERSION}}
+    cmds:
+      - |
+        set -eu
+        tmp=$(mktemp -d)
+        curl -fsSL "https://get.helm.sh/helm-{{.HELM_VERSION}}-{{.OS}}-{{.ARCH}}.tar.gz" \
+          | tar -xz -C "$tmp"
+        mv "$tmp/{{.OS}}-{{.ARCH}}/helm" "{{.LAB_BIN}}/helm"
+        chmod +x "{{.LAB_BIN}}/helm"
+        rm -rf "$tmp"
+
+  tool:kind:
+    internal: true
+    status:
+      - test -x {{.LAB_BIN}}/kind && {{.LAB_BIN}}/kind --version | grep -q {{.KIND_VERSION | trimPrefix "v"}}
+    cmds:
+      - curl -fsSL -o {{.LAB_BIN}}/kind "https://kind.sigs.k8s.io/dl/{{.KIND_VERSION}}/kind-{{.OS}}-{{.ARCH}}"
+      - chmod +x {{.LAB_BIN}}/kind
+
+  tool:kubectl:
+    internal: true
+    status:
+      - test -x {{.LAB_BIN}}/kubectl
+    cmds:
+      - curl -fsSL -o {{.LAB_BIN}}/kubectl "https://dl.k8s.io/release/{{.KUBECTL_VERSION}}/bin/{{.OS}}/{{.ARCH}}/kubectl"
+      - chmod +x {{.LAB_BIN}}/kubectl
+
+  tool:kyverno:
+    internal: true
+    status:
+      - test -x {{.LAB_BIN}}/kyverno
+    cmds:
+      - |
+        set -eu
+        tmp=$(mktemp -d)
+        curl -fsSL "https://github.com/kyverno/kyverno/releases/download/{{.KYVERNO_VERSION}}/kyverno-cli_{{.KYVERNO_VERSION}}_{{.OS}}_{{.ARCH}}.tar.gz" \
+          | tar -xz -C "$tmp"
+        mv "$tmp/kyverno" "{{.LAB_BIN}}/kyverno"
+        chmod +x "{{.LAB_BIN}}/kyverno"
+        rm -rf "$tmp"
+
+  tool:argocd:
+    internal: true
+    status:
+      - test -x {{.LAB_BIN}}/argocd
+    cmds:
+      - curl -fsSL -o {{.LAB_BIN}}/argocd "https://github.com/argoproj/argo-cd/releases/download/{{.ARGOCD_VERSION}}/argocd-{{.OS}}-{{.ARCH}}"
+      - chmod +x {{.LAB_BIN}}/argocd
+
+  # -- lab lifecycle -------------------------------------------------------
+
+  lab:cluster:
+    desc: Create the kind cluster if it does not exist (idempotent)
+    deps: [lab:tools]
+    status:
+      - '{{.LAB_BIN}}/kind get clusters 2>/dev/null | grep -qx {{.CLUSTER_NAME}}'
+    cmds:
+      - mkdir -p {{.ROOT_DIR}}/.lab
+      - |
+        {{.LAB_BIN}}/kind create cluster \
+          --name {{.CLUSTER_NAME}} \
+          --config {{.ROOT_DIR}}/lab/bootstrap/kind-cluster.yaml \
+          --image {{.KIND_NODE_IMAGE}} \
+          --kubeconfig {{.KUBECONFIG_ADMIN}} \
+          --wait 120s
+
+  lab:observability:
+    desc: Install the trimmed Prometheus and Loki stack (idempotent)
+    deps: [lab:cluster]
+    env:
+      KUBECONFIG: '{{.KUBECONFIG_ADMIN}}'
+    cmds:
+      - '{{.LAB_BIN}}/helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update'
+      - '{{.LAB_BIN}}/helm repo add grafana https://grafana.github.io/helm-charts --force-update'
+      - '{{.LAB_BIN}}/helm repo update'
+      - |
+        {{.LAB_BIN}}/helm upgrade --install kube-prometheus-stack \
+          prometheus-community/kube-prometheus-stack \
+          --version {{.KPS_CHART_VERSION}} \
+          --namespace observability --create-namespace \
+          --values {{.ROOT_DIR}}/lab/bootstrap/values/kube-prometheus-stack.yaml \
+          --wait --timeout 8m
+      - |
+        {{.LAB_BIN}}/helm upgrade --install loki grafana/loki \
+          --version {{.LOKI_CHART_VERSION}} \
+          --namespace observability --create-namespace \
+          --values {{.ROOT_DIR}}/lab/bootstrap/values/loki.yaml \
+          --wait --timeout 8m
+
+  lab:gitea:
+    desc: Install gitea and generate its admin credentials into .lab (idempotent)
+    deps: [lab:cluster]
+    env:
+      KUBECONFIG: '{{.KUBECONFIG_ADMIN}}'
+    cmds:
+      # Credentials are generated, never committed: .lab is gitignored, and the
+      # file is only created once so re-running does not rotate it out from
+      # under a running cluster.
+      # `umask` is not available: go-task runs commands through its own shell
+      # interpreter, which has no such builtin. chmod after the fact instead.
+      - |
+        set -eu
+        if [ ! -f {{.ROOT_DIR}}/.lab/gitea-admin-password ]; then
+          openssl rand -hex 24 > {{.ROOT_DIR}}/.lab/gitea-admin-password
+          chmod 600 {{.ROOT_DIR}}/.lab/gitea-admin-password
+        fi
+      - '{{.LAB_BIN}}/helm repo add gitea-charts https://dl.gitea.com/charts/ --force-update'
+      - '{{.LAB_BIN}}/helm repo update gitea-charts'
+      - |
+        {{.LAB_BIN}}/helm upgrade --install gitea gitea-charts/gitea \
+          --version {{.GITEA_CHART_VERSION}} \
+          --namespace gitea --create-namespace \
+          --values {{.ROOT_DIR}}/lab/bootstrap/values/gitea.yaml \
+          --set gitea.admin.password="$(cat {{.ROOT_DIR}}/.lab/gitea-admin-password)" \
+          --wait --timeout 8m
+
+  lab:seed:
+    desc: Create the gitops repo in gitea and push lab/gitops into it (idempotent)
+    deps: [lab:gitea]
+    env:
+      KUBECONFIG: '{{.KUBECONFIG_ADMIN}}'
+    cmds:
+      # Credentials are read from the generated file and passed as an Authorization
+      # header rather than embedded in a remote URL, so they cannot end up in git
+      # output, shell history, or the repo's own config.
+      - |
+        set -eu
+        PASS="$(cat {{.ROOT_DIR}}/.lab/gitea-admin-password)"
+        AUTH="Authorization: Basic $(printf 'kubemend:%s' "$PASS" | base64 | tr -d '\n')"
+
+        {{.LAB_BIN}}/kubectl -n gitea port-forward svc/gitea-http 3000:3000 >/dev/null 2>&1 &
+        PF=$!
+        trap 'kill $PF 2>/dev/null || true' EXIT
+
+        for i in $(seq 1 30); do
+          if curl -fsS -o /dev/null "http://localhost:3000/api/healthz" 2>/dev/null; then break; fi
+          sleep 1
+        done
+
+        code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+          -H "$AUTH" -H 'Content-Type: application/json' \
+          -d '{"name":"gitops","private":false,"auto_init":false}' \
+          http://localhost:3000/api/v1/user/repos)
+        case "$code" in
+          201) echo "created gitea repo kubemend/gitops" ;;
+          409) echo "gitea repo kubemend/gitops already exists" ;;
+          *)   echo "unexpected status $code creating repo" >&2; exit 1 ;;
+        esac
+
+        work=$(mktemp -d)
+        cp -R {{.ROOT_DIR}}/lab/gitops/. "$work/"
+        cd "$work"
+        git init -q -b main
+        git -c user.email=lab@kubemend.local -c user.name=kubemend-lab add -A
+        git -c user.email=lab@kubemend.local -c user.name=kubemend-lab \
+          commit -q -m "lab: seed gitops repo"
+        git -c http.extraHeader="$AUTH" push -q --force \
+          http://localhost:3000/kubemend/gitops.git main
+        cd /
+        rm -rf "$work"
+        echo "pushed lab/gitops to gitea"
+
+  lab:argocd:
+    desc: Install Argo CD and register the demo Applications (idempotent)
+    deps: [lab:seed]
+    env:
+      KUBECONFIG: '{{.KUBECONFIG_ADMIN}}'
+    cmds:
+      - '{{.LAB_BIN}}/helm repo add argo https://argoproj.github.io/argo-helm --force-update'
+      - '{{.LAB_BIN}}/helm repo update argo'
+      - |
+        {{.LAB_BIN}}/helm upgrade --install argocd argo/argo-cd \
+          --version {{.ARGOCD_CHART_VERSION}} \
+          --namespace argocd --create-namespace \
+          --values {{.ROOT_DIR}}/lab/bootstrap/values/argo-cd.yaml \
+          --wait --timeout 8m
+      - '{{.LAB_BIN}}/kubectl apply -f {{.ROOT_DIR}}/lab/gitops/argocd/apps/'
+
+  lab:logs:
+    desc: Install promtail so application logs reach Loki (idempotent)
+    deps: [lab:observability]
+    env:
+      KUBECONFIG: '{{.KUBECONFIG_ADMIN}}'
+    cmds:
+      - |
+        {{.LAB_BIN}}/helm upgrade --install promtail grafana/promtail \
+          --version {{.PROMTAIL_CHART_VERSION}} \
+          --namespace observability --create-namespace \
+          --values {{.ROOT_DIR}}/lab/bootstrap/values/promtail.yaml \
+          --wait --timeout 5m
+
+  lab:kyverno:
+    desc: Install Kyverno and apply the project policy pack (idempotent)
+    deps: [lab:cluster]
+    env:
+      KUBECONFIG: '{{.KUBECONFIG_ADMIN}}'
+    cmds:
+      - '{{.LAB_BIN}}/helm repo add kyverno https://kyverno.github.io/kyverno/ --force-update'
+      - '{{.LAB_BIN}}/helm repo update kyverno'
+      - |
+        {{.LAB_BIN}}/helm upgrade --install kyverno kyverno/kyverno \
+          --version {{.KYVERNO_CHART_VERSION}} \
+          --namespace kyverno --create-namespace \
+          --values {{.ROOT_DIR}}/lab/bootstrap/values/kyverno.yaml \
+          --wait --timeout 8m
+      - '{{.LAB_BIN}}/kubectl apply -f {{.ROOT_DIR}}/policies/'
+
+  lab:rbac:
+    desc: Create the read-only ServiceAccount and export its kubeconfig
+    deps: [lab:cluster]
+    env:
+      KUBECONFIG: '{{.KUBECONFIG_ADMIN}}'
+    cmds:
+      - '{{.LAB_BIN}}/kubectl apply -f {{.ROOT_DIR}}/lab/bootstrap/rbac.yaml'
+      - |
+        set -eu
+        KC={{.READONLY_KUBECONFIG}}
+        # The token controller populates the Secret asynchronously.
+        for i in $(seq 1 30); do
+          TOKEN=$({{.LAB_BIN}}/kubectl -n kubemend-system get secret kubemend-reader-token \
+            -o jsonpath='{.data.token}' 2>/dev/null || true)
+          [ -n "$TOKEN" ] && break
+          sleep 1
+        done
+        [ -n "$TOKEN" ] || { echo "reader token was never issued" >&2; exit 1; }
+
+        CA=$({{.LAB_BIN}}/kubectl -n kubemend-system get secret kubemend-reader-token \
+          -o jsonpath='{.data.ca\.crt}')
+        SERVER=$({{.LAB_BIN}}/kubectl config view --minify --raw \
+          -o jsonpath='{.clusters[0].cluster.server}')
+
+        mkdir -p "$(dirname "$KC")"
+        cat > "$KC" <<EOF
+        apiVersion: v1
+        kind: Config
+        clusters:
+          - name: kubemend-lab
+            cluster:
+              server: $SERVER
+              certificate-authority-data: $CA
+        users:
+          - name: kubemend-reader
+            user:
+              token: $(echo "$TOKEN" | base64 -d)
+        contexts:
+          - name: kubemend-lab
+            context:
+              cluster: kubemend-lab
+              user: kubemend-reader
+        current-context: kubemend-lab
+        EOF
+        chmod 600 "$KC"
+        echo "wrote read-only kubeconfig to $KC"
+
+  lab:forward:
+    desc: Port-forward Prometheus/Loki/gitea/Argo to localhost (Ctrl-C to stop)
+    env:
+      KUBECONFIG: '{{.KUBECONFIG_ADMIN}}'
+    cmds:
+      - |
+        set -eu
+        {{.LAB_BIN}}/kubectl -n observability port-forward svc/kube-prometheus-stack-prometheus 9090:9090 &
+        {{.LAB_BIN}}/kubectl -n observability port-forward svc/loki 3100:3100 &
+        {{.LAB_BIN}}/kubectl -n gitea port-forward svc/gitea-http 3000:3000 &
+        {{.LAB_BIN}}/kubectl -n argocd port-forward svc/argocd-server 8080:80 &
+        echo "prometheus :9090  loki :3100  gitea :3000  argocd :8080"
+        wait
+
+  lab:up:
+    desc: Bring up the full kind lab cluster (M2)
+    deps: [lab:cluster]
+    cmds:
+      - task: lab:observability
+      - task: lab:logs
+      - task: lab:gitea
+      - task: lab:seed
+      - task: lab:argocd
+      - task: lab:kyverno
+      - task: lab:rbac
+      - '{{.LAB_BIN}}/kubectl --kubeconfig {{.KUBECONFIG_ADMIN}} get applications -n argocd'
 
   lab:down:
-    desc: Tear down the kind lab cluster (M2)
+    desc: Delete the kind lab cluster and its generated credentials
     cmds:
-      - cmd: echo "lab:down is implemented in M2 (see IMPLEMENTATION_PLAN.md)" >&2 && exit 1
+      - '{{.LAB_BIN}}/kind delete cluster --name {{.CLUSTER_NAME}} || true'
+      - rm -f {{.KUBECONFIG_ADMIN}}
 
   lab:forward:
     desc: Port-forward Prometheus/Loki/gitea/Argo to localhost (M2)
     cmds:
       - cmd: echo "lab:forward is implemented in M2 (see IMPLEMENTATION_PLAN.md)" >&2 && exit 1
+
+  doctor:
+    desc: Check that the container runtime and pinned binaries are usable
+    cmds:
+      - 'echo "DOCKER_HOST=$DOCKER_HOST"'
+      - docker info --format 'engine={{`{{.ServerVersion}}`}} cpus={{`{{.NCPU}}`}} mem={{`{{.MemTotal}}`}}'
+      - 'test -x {{.LAB_BIN}}/kind || (echo "run: task lab:tools" >&2; exit 1)'
