@@ -1,0 +1,32 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-resource-limits
+  annotations:
+    policies.kyverno.io/title: Require CPU requests and memory limits
+    policies.kyverno.io/severity: medium
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: memory-limit-and-cpu-request
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [shop]
+      validate:
+        # This one earns its place in the oom-limit scenario: the fix is to
+        # raise a memory limit, and a proposal that removes the limit entirely
+        # would "fix" the OOM while making the cluster worse.
+        message: >-
+          Every container must declare resources.requests.cpu and
+          resources.limits.memory.
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  requests:
+                    cpu: "?*"
+                  limits:
+                    memory: "?*"

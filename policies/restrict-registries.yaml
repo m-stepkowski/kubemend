@@ -1,0 +1,34 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-image-registries
+  annotations:
+    policies.kyverno.io/title: Only allow images from approved registries
+    policies.kyverno.io/severity: high
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: approved-registries
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [shop]
+      validate:
+        # A remediation agent that can choose image references is a supply-chain
+        # surface. This is the control that keeps a plausible-looking fix from
+        # pulling an arbitrary image, and it is deliberately narrow.
+        message: >-
+          Images must come from docker.io or ghcr.io. Unqualified names are
+          resolved from docker.io and are allowed.
+        deny:
+          conditions:
+            all:
+              - key: "{{ request.object.spec.containers[].image }}"
+                operator: AnyNotIn
+                value:
+                  - "docker.io/*"
+                  - "ghcr.io/*"
+                  - "nginxinc/*"
+                  - "busybox*"
