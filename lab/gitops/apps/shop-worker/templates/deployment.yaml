@@ -38,11 +38,21 @@ spec:
               set -e
               echo "shop-worker starting, allocating {{ .Values.workload.allocateMb }}Mi"
               dd if=/dev/zero of=/ballast/block bs=1M count={{ .Values.workload.allocateMb }} 2>/dev/null
-              echo "allocation complete, entering heartbeat loop"
+              echo "allocation complete"
+              # busybox ships httpd; serving a real port means shop-api's
+              # UPSTREAM_URL resolves to something that answers, so a connection
+              # error in the logs is a fault the scenario injected rather than
+              # a permanently broken lab.
+              mkdir -p /tmp/www && echo "ok" > /tmp/www/index.html
+              httpd -f -p {{ .Values.service.port }} -h /tmp/www &
+              echo "listening on {{ .Values.service.port }}, entering heartbeat loop"
               while true; do
                 echo "worker heartbeat, queue depth 0"
                 sleep {{ .Values.workload.heartbeatSeconds }}
               done
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
           volumeMounts:
             - name: ballast
               mountPath: /ballast
