@@ -1,0 +1,30 @@
+The run is ending without a verified fix. Reason: {{ reason }}.
+
+Write a handoff for the human who picks this up. They have not seen any of the
+above and are starting cold.
+
+Reply with a single JSON object and nothing else — no prose before or after, no
+code fences. Use exactly this shape:
+
+{
+  "root_cause_hypotheses": [
+    {
+      "statement": "what you believe is wrong, specifically",
+      "confidence": 0.0,
+      "evidence": ["the observations supporting it, quoted concretely"]
+    }
+  ],
+  "what_was_ruled_out": ["hypotheses eliminated, each with what eliminated it"],
+  "suggested_next_steps": ["what to do next, in order, most useful first"],
+  "blocking_reason": null
+}
+
+Order hypotheses most likely first, and let `confidence` reflect the evidence
+rather than optimism — a well-calibrated 0.4 is more useful than a reflexive
+0.9. If you have no real hypothesis, say so in one entry with low confidence
+rather than inventing one.
+
+Set `blocking_reason` to a short machine-readable string when one specific thing
+stopped you, otherwise null. Use `fix_not_expressible_in_values` when the fix
+requires editing a chart template rather than a values file, and name that
+template path in `suggested_next_steps`.

@@ -1,0 +1,28 @@
+Summarise the investigation so far. The raw tool results below are about to be
+removed from the conversation to stay within budget; your summary replaces them.
+
+Write at most 600 tokens, under these four headings exactly:
+
+FINDINGS
+What the evidence actually showed. Name resources and values concretely
+(`Deployment/shop/api`, `memory limit 128Mi`, `exit code 137`) rather than
+describing them in general terms.
+
+RULED OUT
+Hypotheses that were tested and eliminated, each with the observation that
+eliminated it. This is the most valuable section — without it the investigation
+re-treads ground.
+
+OPEN QUESTIONS
+What is still unknown and would change the diagnosis.
+
+QUERIES ALREADY RUN
+Every tool call made so far, with its arguments, one per line. Be exhaustive and
+literal here. This list is what stops the investigation from re-issuing queries
+whose results have just been evicted.
+
+Do not speculate beyond the evidence, and do not propose a fix — this is a
+record of what happened, not a plan.
+
+--- INVESTIGATION TO SUMMARISE ---
+{{ transcript }}

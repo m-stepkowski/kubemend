@@ -38,6 +38,13 @@ path = "kubemend/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["kubemend"]
 
+# ARCHITECTURE.md §9 keeps prompts/ at the repo root, but an installed wheel
+# only ships kubemend/. Ship them inside the package so a released CLI can
+# render its own prompts; kubemend/prompts.py prefers this copy and falls back
+# to the repo-root one in a development checkout.
+[tool.hatch.build.targets.wheel.force-include]
+"prompts" = "kubemend/prompts"
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
