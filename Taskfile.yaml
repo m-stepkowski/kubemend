@@ -48,6 +48,43 @@ env:
       else echo "unix:///var/run/docker.sock"; fi
 
 tasks:
+  sync:
+    desc: Install or refresh dependencies
+    cmds:
+      - uv sync
+      - task: fix:pth
+
+  fix:pth:
+    # macOS writes .pth files in the venv with the UF_HIDDEN flag set, and
+    # CPython 3.11+ deliberately skips hidden .pth files. The effect is that the
+    # editable install is silently inert: `kubemend` is then only importable
+    # when the working directory happens to be the repo root, so the console
+    # script fails from anywhere else with "No module named 'kubemend.cli'".
+    #
+    # Not wired into `task test`: uv and pytest both re-mark the files during a
+    # run, so a fix applied beforehand does not survive. Run `task sync` when
+    # you need `kubemend` importable from outside the repo root; running from
+    # the repo root works regardless, because the working directory is on
+    # sys.path.
+    internal: true
+    status:
+      - test "$(uname -s)" != Darwin
+    cmds:
+      # `find -exec` rather than a shell glob: go-task runs commands through
+      # its own interpreter, which does not expand the `python*` component.
+      - find {{.ROOT_DIR}}/.venv/lib -name '*.pth' -exec chflags nohidden {} +
+
+  run:
+    desc: "Run the agent, e.g. task run -- --task '...' --namespace shop --app shop-api"
+    # Deliberately not `uv run kubemend`. On macOS that reinstalls the project
+    # to resolve the entry point, which rewrites the venv's .pth file with the
+    # UF_HIDDEN flag set — and CPython skips hidden .pth files, so the script
+    # then cannot import its own package. Clearing the flag first and invoking
+    # the venv's binary directly keeps uv out of the critical moment.
+    deps: [fix:pth]
+    cmds:
+      - '{{.ROOT_DIR}}/.venv/bin/kubemend run {{.CLI_ARGS}}'
+
   test:
     desc: Unit tests (hermetic, no cluster, no network)
     cmds:
