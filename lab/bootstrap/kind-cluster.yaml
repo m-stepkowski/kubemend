@@ -1,0 +1,17 @@
+# kind cluster for the kubemend lab (ARCHITECTURE.md §6).
+#
+# Single control-plane node on purpose. Multi-node kind buys nothing here — the
+# lab tests remediation of workloads, not scheduling or node failure — and every
+# extra node is another kubelet plus container runtime competing for the VM's
+# memory with Prometheus, Loki, Argo CD and gitea.
+#
+# Do not add a kubeadm patch clearing `taints`. kind already removes the
+# control-plane taint itself on a single-node cluster; clearing it first makes
+# kind's own removal fail with `taint "node-role.kubernetes.io/control-plane"
+# not found` and the whole create rolls back.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: kubemend
+
+nodes:
+  - role: control-plane

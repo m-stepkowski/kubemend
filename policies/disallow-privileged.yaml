@@ -1,0 +1,39 @@
+# Kyverno policy pack (ARCHITECTURE.md §5).
+#
+# These policies run in two places against the same file: as admission control
+# in the lab cluster, and as a validator stage over rendered manifests before a
+# PR is allowed to pass the gate. Admission parity is the point — a change the
+# agent proposes must fail the same way it would fail in a real cluster.
+#
+# Scoped to the `shop` namespace. The infrastructure namespaces run upstream
+# charts we do not control, and enforcing our house rules on them would only
+# teach us that Prometheus mounts a hostPath.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-privileged
+  annotations:
+    policies.kyverno.io/title: Disallow privileged containers
+    policies.kyverno.io/severity: high
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: privileged-containers
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [shop]
+      validate:
+        message: >-
+          Privileged mode is not allowed. Set
+          securityContext.privileged to false and drop capabilities.
+        pattern:
+          spec:
+            =(securityContext):
+              =(privileged): "false"
+            containers:
+              - =(securityContext):
+                  =(privileged): "false"
+                  =(allowPrivilegeEscalation): "false"

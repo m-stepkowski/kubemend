@@ -1,0 +1,50 @@
+# Trimmed Argo CD for the lab (ARCHITECTURE.md §6).
+#
+# Argo is the only actor that writes to the cluster (trust boundary 3), so it
+# has to be here — but the lab needs exactly one capability from it: sync two
+# Helm apps from gitea and report Healthy/Synced. SSO, ApplicationSets and the
+# notification controller are all pods that would never be exercised.
+
+dex:
+  enabled: false
+
+notifications:
+  enabled: false
+
+applicationSet:
+  enabled: false
+
+controller:
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 192Mi}
+    limits: {memory: 640Mi}
+
+repoServer:
+  replicas: 1
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 384Mi}
+
+server:
+  replicas: 1
+  resources:
+    requests: {cpu: 50m, memory: 96Mi}
+    limits: {memory: 256Mi}
+  # No TLS to terminate: access is via port-forward on a local cluster.
+  extraArgs:
+    - --insecure
+
+redis:
+  resources:
+    requests: {cpu: 25m, memory: 64Mi}
+    limits: {memory: 192Mi}
+
+configs:
+  params:
+    # Matches server.extraArgs above; the chart also templates this key.
+    server.insecure: true
+  cm:
+    # The lab repo is plain HTTP inside the cluster. Argo refuses that by
+    # default, and this is the flag that permits it.
+    timeout.reconciliation: 30s

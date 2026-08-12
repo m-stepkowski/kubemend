@@ -58,3 +58,51 @@ def _walk(value: object) -> object:
 def redact(payload: dict[str, Any]) -> dict[str, Any]:
     """Mask secrets in a tool payload. Shape is preserved, so the cast holds."""
     return cast(dict[str, Any], _walk(payload))
+
+
+# Environment variables whose values are diagnostic rather than sensitive.
+# Deliberately a short allow-list rather than a deny-list of secret-looking
+# names: a deny-list fails open on the one variable nobody thought of, and the
+# cost of masking a harmless value is that the model asks a different question.
+SAFE_ENV_NAMES = frozenset(
+    {
+        "LOG_LEVEL",
+        "PORT",
+        "HTTP_PORT",
+        "METRICS_PORT",
+        "ENVIRONMENT",
+        "ENV",
+        "NODE_ENV",
+        "REGION",
+        "CLUSTER",
+        "NAMESPACE",
+        "SERVICE_NAME",
+        "APP_NAME",
+        "VERSION",
+        "TZ",
+        "FEATURE_FLAGS",
+        "UPSTREAM_URL",
+    }
+)
+
+
+def redact_env_list(env: list[Any]) -> list[Any]:
+    """Mask container env values unless the name is explicitly safe (§3.3).
+
+    Values sourced from a Secret via `valueFrom` are left structurally alone —
+    the reference is useful context ("this comes from secret/db-creds") and the
+    value was never fetched in the first place.
+    """
+    shaped: list[Any] = []
+    for item in env:
+        if not isinstance(item, dict):
+            shaped.append(item)
+            continue
+        entry = dict(item)
+        name = str(entry.get("name", ""))
+        if "value" in entry and name not in SAFE_ENV_NAMES:
+            entry["value"] = f"<redacted:{name}>"
+        elif "value" in entry:
+            entry["value"] = redact_text(str(entry["value"]))
+        shaped.append(entry)
+    return shaped

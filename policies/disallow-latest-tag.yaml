@@ -1,0 +1,38 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-latest-tag
+  annotations:
+    policies.kyverno.io/title: Require an explicit, non-latest image tag
+    policies.kyverno.io/severity: medium
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-image-tag
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [shop]
+      validate:
+        message: "Images must specify a tag."
+        pattern:
+          spec:
+            containers:
+              - image: "*:*"
+    - name: disallow-latest
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [shop]
+      validate:
+        # Directly relevant to bad-image-tag: an agent that "fixes" a broken
+        # tag by reaching for :latest has made the deployment unreproducible
+        # rather than correct, and the gate should say so.
+        message: "Using the :latest tag is not allowed; pin a specific version."
+        pattern:
+          spec:
+            containers:
+              - image: "!*:latest"

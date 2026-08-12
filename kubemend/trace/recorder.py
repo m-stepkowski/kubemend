@@ -106,6 +106,7 @@ class TraceRecorder:
                 "usage": {
                     "input_tokens": response.usage.input_tokens,
                     "cached_input_tokens": response.usage.cached_input_tokens,
+                    "cache_creation_tokens": response.usage.cache_creation_tokens,
                     "output_tokens": response.usage.output_tokens,
                 },
                 "cost_usd": cost_usd,

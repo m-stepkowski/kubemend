@@ -1,0 +1,6 @@
+apiVersion: v2
+name: shop-api
+description: HTTP demo service for the kubemend lab — the app most scenarios break.
+type: application
+version: 0.1.0
+appVersion: "1.27"

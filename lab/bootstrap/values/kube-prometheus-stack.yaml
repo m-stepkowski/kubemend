@@ -1,0 +1,44 @@
+# Trimmed kube-prometheus-stack for the lab (ARCHITECTURE.md §6).
+#
+# The agent only ever reads through the Prometheus HTTP API, so everything that
+# exists to serve humans is switched off. This is not just thrift: the lab has
+# to come up inside 15 minutes on a stranger's laptop (M5), and Grafana +
+# Alertmanager + the full rule set is most of the memory and most of the wait.
+
+grafana:
+  enabled: false
+
+alertmanager:
+  enabled: false
+
+# Node-level metrics are irrelevant on a single-node kind cluster whose node is
+# a container: the scenarios are about workloads, not hosts.
+nodeExporter:
+  enabled: false
+
+kubeStateMetrics:
+  enabled: true
+
+prometheusOperator:
+  resources:
+    requests: {cpu: 50m, memory: 96Mi}
+    limits: {memory: 256Mi}
+
+prometheus:
+  prometheusSpec:
+    # 2h is plenty: every scenario injects a fault and reads it back within
+    # minutes. Long retention would only grow the WAL.
+    retention: 2h
+    scrapeInterval: 15s
+    evaluationInterval: 30s
+    resources:
+      requests: {cpu: 100m, memory: 384Mi}
+      limits: {memory: 900Mi}
+    # Discover ServiceMonitors from the demo apps without label gymnastics.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    storageSpec: {}
+
+defaultRules:
+  create: false

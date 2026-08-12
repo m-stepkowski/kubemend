@@ -1,0 +1,64 @@
+# Read-only identity for the agent (ARCHITECTURE.md §8, trust boundary 2).
+#
+# This is the security control the whole read path rests on: the agent process
+# holds a kubeconfig for this ServiceAccount and nothing else. The allow-list in
+# tools/kubernetes/reader.py is defence in depth on top of it — if that list
+# were ever bypassed, the API server still refuses anything not granted here.
+#
+# Note what is absent: no verbs on `secrets` at all. Not `get`, not `list`. The
+# executor is written never to fetch Secret values, and this makes that
+# structural rather than a promise — a bug in the reader cannot leak what the
+# credential cannot request.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubemend-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubemend-reader
+  namespace: kubemend-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubemend-reader
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, services, configmaps, events, resourcequotas, namespaces]
+    verbs: [get, list, watch]
+  - apiGroups: ["apps"]
+    resources: [deployments, statefulsets, replicasets, daemonsets]
+    verbs: [get, list, watch]
+  - apiGroups: ["autoscaling"]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, list, watch]
+  - apiGroups: ["networking.k8s.io"]
+    resources: [ingresses]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubemend-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubemend-reader
+subjects:
+  - kind: ServiceAccount
+    name: kubemend-reader
+    namespace: kubemend-system
+---
+# A non-expiring token. `kubectl create token` issues a bound token that would
+# expire mid-eval-sweep and turn a capability question into a flake; this
+# Secret-backed token survives cluster restarts and long sweeps.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kubemend-reader-token
+  namespace: kubemend-system
+  annotations:
+    kubernetes.io/service-account.name: kubemend-reader
+type: kubernetes.io/service-account-token

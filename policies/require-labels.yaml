@@ -1,0 +1,25 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-app-label
+  annotations:
+    policies.kyverno.io/title: Require the standard app name label
+    policies.kyverno.io/severity: low
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: app-kubernetes-io-name
+      match:
+        any:
+          - resources:
+              kinds: [Pod, Deployment, StatefulSet]
+              namespaces: [shop]
+      validate:
+        # The scope check in verify/gate.py maps a diff back to an app; without
+        # a consistent label that mapping is guesswork.
+        message: "app.kubernetes.io/name is required on workloads."
+        pattern:
+          metadata:
+            labels:
+              app.kubernetes.io/name: "?*"
