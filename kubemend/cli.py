@@ -8,11 +8,11 @@ the whole harness against a real cluster before the write path exists.
 
 from __future__ import annotations
 
-import os
 import uuid
 from pathlib import Path
 from typing import Annotated
 
+import anthropic
 import typer
 
 from kubemend.config import RunConfig, load_config
@@ -95,17 +95,28 @@ def run(
 ) -> None:
     """Diagnose an incident and propose a fix (read-only until M3)."""
     cfg = load_config(config)
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        typer.echo("ANTHROPIC_API_KEY is not set", err=True)
-        raise typer.Exit(code=1)
-
     incident = Task(statement=task, scope=Scope(namespace=namespace, app=app_name), window=window)
     trace = TraceRecorder.open(Path("traces") / f"{uuid.uuid4().hex[:12]}.jsonl")
+
+    # Deliberately no ANTHROPIC_API_KEY precondition. The SDK resolves
+    # credentials from several sources in order — the env var, an
+    # ANTHROPIC_AUTH_TOKEN, or an `ant auth login` profile on disk — so an unset
+    # env var does not mean the user has no credentials. Let the SDK decide and
+    # translate its refusal into something actionable.
+    try:
+        llm = AnthropicClient(cfg)
+    except anthropic.AnthropicError as exc:
+        typer.echo(
+            f"could not authenticate to the Anthropic API: {exc}\n"
+            "Set ANTHROPIC_API_KEY, or run `ant auth login` to store a profile.",
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
 
     result = run_loop(
         incident,
         cfg,
-        llm=AnthropicClient(cfg),
+        llm=llm,
         registry=build_read_only_registry(cfg),
         gate=ReadOnlyGate(),
         trace=trace,
