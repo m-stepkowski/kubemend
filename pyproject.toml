@@ -38,13 +38,6 @@ path = "kubemend/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["kubemend"]
 
-# ARCHITECTURE.md §9 keeps prompts/ at the repo root, but an installed wheel
-# only ships kubemend/. Ship them inside the package so a released CLI can
-# render its own prompts; kubemend/prompts.py prefers this copy and falls back
-# to the repo-root one in a development checkout.
-[tool.hatch.build.targets.wheel.force-include]
-"prompts" = "kubemend/prompts"
-
 [tool.ruff]
 line-length = 100
 target-version = "py312"
@@ -66,13 +59,14 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Flat layout (ARCHITECTURE.md §9 puts kubemend/ at the repo root), so the
-# editable install's .pth entry collides with the working directory and site
-# skips it. Put the root on the path explicitly: tests then import the working
-# tree rather than depending on how the dev install happens to be wired.
+# Import the working tree rather than depending on how the dev install happens
+# to be wired. That dependency is not hypothetical: on macOS the venv's .pth
+# files carry the UF_HIDDEN flag, and CPython 3.11+ skips hidden .pth files, so
+# an editable install can be silently inert.
 pythonpath = ["."]
 addopts = "-m 'not lab'"
 markers = [
     "lab: integration test requiring the kind lab cluster (task lab:up)",
     "integration: exercises a real external process or network endpoint",
+    "slow: builds an artefact or otherwise takes seconds rather than milliseconds",
 ]

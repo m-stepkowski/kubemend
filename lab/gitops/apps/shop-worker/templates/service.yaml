@@ -1,0 +1,20 @@
+# shop-worker's Service.
+#
+# Added because the first live agent run found it missing: shop-api's
+# UPSTREAM_URL points at shop-worker.shop.svc.cluster.local:9090, and nothing
+# was serving that name. Without it, `bad-env-endpoint` in M4 would be
+# indistinguishable from this pre-existing breakage — the scenario would
+# "pass" for the wrong reason.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Chart.Name }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http

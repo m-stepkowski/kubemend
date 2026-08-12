@@ -13,6 +13,7 @@ from kubemend.config import RunConfig
 from kubemend.core.loop import run
 from kubemend.core.model import CheckResult, Task, Verdict
 from kubemend.llm.fake import FakeLLM, handoff_turn, text_turn, tool_turn
+from kubemend.tools.base import ToolSpec
 from kubemend.tools.registry import ToolRegistry
 from kubemend.trace.recorder import TraceRecorder, replay
 
@@ -20,8 +21,20 @@ from .conftest import StubGate, counting_tool
 
 
 def _registry() -> ToolRegistry:
-    spec, _ = counting_tool("probe", lambda _a: {"ok": True})
-    return ToolRegistry([spec])
+    """A registry with a write path, so the verification path is reachable.
+
+    Without a propose-tier tool the loop hands off at the first completion
+    claim, which is correct but bypasses everything these tests assert on.
+    """
+    probe, _ = counting_tool("probe", lambda _a: {"ok": True})
+    proposer = ToolSpec(
+        name="propose_git_change",
+        description="Propose a values change.",
+        parameters={"type": "object", "properties": {}},
+        executor=lambda _a: {"branch": "kubemend/test"},
+        tier="propose",
+    )
+    return ToolRegistry([probe, proposer])
 
 
 def test_handoff_is_produced_on_budget_exhaustion(

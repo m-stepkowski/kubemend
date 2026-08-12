@@ -126,6 +126,15 @@ class ToolRegistry:
     def schemas(self) -> list[dict[str, Any]]:
         return [spec.schema() for spec in self._specs.values()]
 
+    def has_write_path(self) -> bool:
+        """Whether any registered tool can propose a change.
+
+        With no propose-tier tool there is nothing a verification gate could
+        ever pass, so a completion claim is terminal rather than something to
+        send back for another attempt.
+        """
+        return any(spec.tier == "propose" for spec in self._specs.values())
+
     def execute(self, call: ToolCall) -> ToolOutcome:
         started = time.monotonic()
         spec = self._specs.get(call.name)

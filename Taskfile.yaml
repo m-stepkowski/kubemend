@@ -48,6 +48,43 @@ env:
       else echo "unix:///var/run/docker.sock"; fi
 
 tasks:
+  sync:
+    desc: Install or refresh dependencies
+    cmds:
+      - uv sync
+      - task: fix:pth
+
+  fix:pth:
+    # macOS writes .pth files in the venv with the UF_HIDDEN flag set, and
+    # CPython 3.11+ deliberately skips hidden .pth files. The effect is that the
+    # editable install is silently inert: `kubemend` is then only importable
+    # when the working directory happens to be the repo root, so the console
+    # script fails from anywhere else with "No module named 'kubemend.cli'".
+    #
+    # Not wired into `task test`: uv and pytest both re-mark the files during a
+    # run, so a fix applied beforehand does not survive. Run `task sync` when
+    # you need `kubemend` importable from outside the repo root; running from
+    # the repo root works regardless, because the working directory is on
+    # sys.path.
+    internal: true
+    status:
+      - test "$(uname -s)" != Darwin
+    cmds:
+      # `find -exec` rather than a shell glob: go-task runs commands through
+      # its own interpreter, which does not expand the `python*` component.
+      - find {{.ROOT_DIR}}/.venv/lib -name '*.pth' -exec chflags nohidden {} +
+
+  run:
+    desc: "Run the agent, e.g. task run -- --task '...' --namespace shop --app shop-api"
+    # Deliberately not `uv run kubemend`. On macOS that reinstalls the project
+    # to resolve the entry point, which rewrites the venv's .pth file with the
+    # UF_HIDDEN flag set — and CPython skips hidden .pth files, so the script
+    # then cannot import its own package. Clearing the flag first and invoking
+    # the venv's binary directly keeps uv out of the critical moment.
+    deps: [fix:pth]
+    cmds:
+      - '{{.ROOT_DIR}}/.venv/bin/kubemend run {{.CLI_ARGS}}'
+
   test:
     desc: Unit tests (hermetic, no cluster, no network)
     cmds:
@@ -326,11 +363,14 @@ tasks:
           -o jsonpath='{.clusters[0].cluster.server}')
 
         mkdir -p "$(dirname "$KC")"
+        # Context name must match kubernetes.context in kubemend.yaml (§8) —
+        # the client selects by name, and a mismatch fails at connect time with
+        # a "context not found" that looks like a broken cluster.
         cat > "$KC" <<EOF
         apiVersion: v1
         kind: Config
         clusters:
-          - name: kubemend-lab
+          - name: kind-kubemend
             cluster:
               server: $SERVER
               certificate-authority-data: $CA
@@ -339,11 +379,11 @@ tasks:
             user:
               token: $(echo "$TOKEN" | base64 -d)
         contexts:
-          - name: kubemend-lab
+          - name: kind-kubemend
             context:
-              cluster: kubemend-lab
+              cluster: kind-kubemend
               user: kubemend-reader
-        current-context: kubemend-lab
+        current-context: kind-kubemend
         EOF
         chmod 600 "$KC"
         echo "wrote read-only kubeconfig to $KC"
@@ -380,11 +420,6 @@ tasks:
     cmds:
       - '{{.LAB_BIN}}/kind delete cluster --name {{.CLUSTER_NAME}} || true'
       - rm -f {{.KUBECONFIG_ADMIN}}
-
-  lab:forward:
-    desc: Port-forward Prometheus/Loki/gitea/Argo to localhost (M2)
-    cmds:
-      - cmd: echo "lab:forward is implemented in M2 (see IMPLEMENTATION_PLAN.md)" >&2 && exit 1
 
   doctor:
     desc: Check that the container runtime and pinned binaries are usable

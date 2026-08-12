@@ -32,7 +32,7 @@ Kubemend is an LLM agent harness (built from scratch, no agent frameworks) that 
 
 - Python 3.12, full type hints, `mypy --strict` clean; frozen dataclasses for the data model (§2.1)
 - Tests first for core/ and validator failure modes; property-based checkers in scenarios (never golden diffs)
-- Prompts live in `prompts/*.j2`, versioned and reviewed like code — no inline prompt strings in Python
+- Prompts live in `kubemend/prompts/*.j2`, versioned and reviewed like code — no inline prompt strings in Python (inside the package so an installed wheel can find them)
 - Every run writes a JSONL trace; if you add an event type, extend `trace/replay.py` and its round-trip test in the same PR
 - Conventional commits; one logical change per commit
 - Pinned tool binaries (helm, kyverno, kind, argocd) come from Taskfile-managed versions — never rely on system PATH versions

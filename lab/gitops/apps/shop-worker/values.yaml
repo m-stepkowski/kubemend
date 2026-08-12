@@ -12,6 +12,11 @@ image:
   tag: "1.36"
   pullPolicy: IfNotPresent
 
+service:
+  # shop-api's UPSTREAM_URL resolves to this port; keep the two in step or
+  # bad-env-endpoint stops testing what it claims to.
+  port: 9090
+
 workload:
   # Megabytes the worker allocates on start and keeps resident.
   allocateMb: 48

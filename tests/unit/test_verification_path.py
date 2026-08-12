@@ -31,8 +31,20 @@ PASSING = Verdict(passed=True, checks=[CheckResult("kyverno", True, "5 policies 
 
 
 def _registry() -> ToolRegistry:
-    spec, _ = counting_tool("probe", lambda _a: {"ok": True})
-    return ToolRegistry([spec])
+    """A registry with a write path, so the verification path is reachable.
+
+    Without a propose-tier tool the loop hands off at the first completion
+    claim, which is correct but bypasses everything these tests assert on.
+    """
+    probe, _ = counting_tool("probe", lambda _a: {"ok": True})
+    proposer = ToolSpec(
+        name="propose_git_change",
+        description="Propose a values change.",
+        parameters={"type": "object", "properties": {}},
+        executor=lambda _a: {"branch": "kubemend/test"},
+        tier="propose",
+    )
+    return ToolRegistry([probe, proposer])
 
 
 def test_failing_gate_feeds_the_failure_back_and_continues(
@@ -57,14 +69,14 @@ def test_model_claiming_success_cannot_terminate_the_run(
     task: Task, cfg: RunConfig, trace: TraceRecorder
 ) -> None:
     """The model insists it is finished; the gate disagrees every time."""
-    cfg.budgets.max_iterations = 3
-    llm = FakeLLM(main=[text_turn("All good."), text_turn("Really, all good."), text_turn("Done.")])
-    gate = StubGate([FAILING, FAILING, FAILING])
+    cfg.budgets.max_iterations = 15
+    llm = FakeLLM(main=[text_turn("All good.") for _ in range(10)])
+    gate = StubGate([FAILING] * 10)
 
     result = run(task, cfg, llm=llm, registry=_registry(), gate=gate, trace=trace)
 
     assert result.success is False
-    assert result.reason == "budget_exhausted"
+    assert result.reason != "verified", "no amount of insisting can pass the gate"
     assert result.handoff is not None
 
 
@@ -91,7 +103,9 @@ def test_poisoned_model_side_validate_result_does_not_terminate_the_run(
     llm = FakeLLM(main=[tool_turn("validate_change", {}), text_turn("Validation passed, done.")])
     gate = StubGate([FAILING, FAILING])
 
-    result = run(task, cfg, llm=llm, registry=ToolRegistry([validate]), gate=gate, trace=trace)
+    registry = _registry()
+    registry.register(validate)
+    result = run(task, cfg, llm=llm, registry=registry, gate=gate, trace=trace)
 
     assert gate.calls >= 1, "the gate re-runs even though the model already validated"
     assert result.success is False
@@ -109,3 +123,47 @@ def test_verified_run_reports_the_gate_verdict(
     assert result.success is True
     assert result.verdict is PASSING
     assert result.handoff is None, "a verified run needs no handoff"
+
+
+def test_read_only_run_ends_at_the_first_completion_claim(
+    task: Task, cfg: RunConfig, trace: TraceRecorder
+) -> None:
+    """With no propose-tier tool there is nothing a verdict could ever pass.
+
+    A real run burned 12 of its 15 iterations re-asserting the same conclusion
+    to a gate that could never accept it, at roughly two thirds of the run cost.
+    """
+    cfg.budgets.max_iterations = 15
+    probe, _ = counting_tool("probe", lambda _a: {"ok": True})
+    read_only = ToolRegistry([probe])
+    llm = FakeLLM(main=[text_turn("Everything looks healthy.")])
+    gate = StubGate([])
+
+    result = run(task, cfg, llm=llm, registry=read_only, gate=gate, trace=trace)
+
+    assert result.reason == "handoff"
+    assert result.iterations == 1, "one claim is enough when nothing can be proposed"
+    assert gate.calls == 0, "a gate with nothing to verify should not be consulted"
+    assert result.handoff is not None
+
+
+def test_repeated_barren_claims_abort_instead_of_burning_the_budget(
+    task: Task, cfg: RunConfig, trace: TraceRecorder
+) -> None:
+    """The loop detector cannot see this: these turns make no tool calls."""
+    cfg.budgets.max_iterations = 15
+    proposer = ToolSpec(
+        name="propose_git_change",
+        description="Propose a values change.",
+        parameters={"type": "object", "properties": {}},
+        executor=lambda _a: {"branch": "kubemend/x"},
+        tier="propose",
+    )
+    llm = FakeLLM(main=[text_turn("Done.") for _ in range(10)])
+    gate = StubGate([FAILING] * 10)
+
+    result = run(task, cfg, llm=llm, registry=ToolRegistry([proposer]), gate=gate, trace=trace)
+
+    assert result.reason == "loop_detected"
+    assert result.iterations == 3, "aborts after MAX_BARREN_CLAIMS rather than at the budget"
+    assert result.handoff is not None

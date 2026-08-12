@@ -4,6 +4,7 @@ Authoritative companion to ARCHITECTURE.md §2 for anyone (human or Claude Code)
 
 ## Invariants
 
+- **I0 — A run with no write path cannot be verified.** If no `propose`-tier tool is registered there is nothing a gate could ever pass, so the first completion claim terminates the run as a handoff rather than being sent back. Without this, read-only runs spin until the budget is gone.
 - **I1 — No trusted self-report.** The model claiming completion (a turn without tool calls) triggers `gate.verify()`, which re-runs the validation pipeline itself. A model-initiated `validate_change` result is a hint for the model, never an input to termination. Test: poisoned model-side verdict fixture must not terminate the run.
 - **I2 — Errors are information.** Executors return `{"error": {"type", "detail"}}`; the loop never sees exceptions from tools. Retry policy: exactly one retry, jittered backoff, only for transport-class failures (timeout, connection error, 5xx). 4xx/validation errors go straight to the model — they tell it how to correct the call.
 - **I3 — Redaction precedes context.** Applied inside `registry.execute()`, after execution, before truncation. No tool, present or future, can bypass it because it lives in the wrapper, not the tools.
@@ -21,6 +22,7 @@ Authoritative companion to ARCHITECTURE.md §2 for anyone (human or Claude Code)
 | Token estimate | 4 bytes ≈ 1 token | Truncation and compaction are threshold checks with slack either side, so a byte-length estimate beats a tokenizer round-trip per call. Revisit if a scenario trips a threshold it should not. |
 | Compaction target | ≤600 tok summary of oldest 50% | Must include "queries already run" so re-query loops stay detectable. |
 | Loop detector | nudge@2, abort@3 identical `(name, canonical_args)` | Most common real failure in week one; identical-args repetition is never productive. |
+| `MAX_BARREN_CLAIMS` | 3 | A completion claim following a failed verdict with no intervening tool call is repetition the loop detector cannot see — it compares tool calls, and these turns make none. Observed burning 12 of 15 iterations (~65% of run cost) re-asserting one conclusion. |
 | `max_iterations` | 15 | Positive scenarios converge in 4–9; 15 gives retry headroom after one gate failure. |
 | `max_cost_usd_per_run` | 1.00 | Makes cost overruns structurally impossible during dev. |
 

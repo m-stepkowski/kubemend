@@ -25,6 +25,11 @@ from kubemend.trace.cost import load_pricing, price_for, usd
 from kubemend.trace.recorder import TraceRecorder
 from kubemend.verify.gate import VerificationGate
 
+# Consecutive completion claims tolerated after a failed verdict before the
+# run is handed off. Mirrors LoopDetector.abort_after: the model gets the
+# failure back, one genuine retry, and then the run stops.
+MAX_BARREN_CLAIMS = 3
+
 
 def run(
     task: Task,
@@ -45,6 +50,7 @@ def run(
         max_wall_seconds=cfg.budgets.max_wall_seconds,
     )
     detector = LoopDetector()
+    barren_claims = 0
     trace.run_header(task, cfg)
 
     while True:
@@ -66,6 +72,7 @@ def run(
                     if detector.should_abort():
                         return _handoff(ctx, llm, trace, budget, reason="loop_detected")
                     continue
+                barren_claims = 0  # real work happened; the streak resets
                 outcome = registry.execute(call)
                 ctx.append_tool_exchange(call, outcome)
                 trace.tool_call(call, outcome)
@@ -73,6 +80,12 @@ def run(
             continue
 
         # No tool calls means the model claims completion. Never trust the claim.
+        if not registry.has_write_path():
+            # Nothing can propose a change, so no verdict could ever pass and
+            # re-prompting only burns budget. Read-only runs end here, in the
+            # designed outcome: a handoff.
+            return _handoff(ctx, llm, trace, budget, reason="handoff")
+
         verdict = gate.verify()
         trace.verdict(verdict)
         if verdict.passed:
@@ -86,7 +99,16 @@ def run(
             )
             trace.result(result)
             return result
+
         ctx.append_verification_failure(verdict)
+        # A claim that follows a failed verdict without any intervening tool
+        # call is the model repeating itself, and the loop detector cannot see
+        # it because there are no tool calls to compare. Left unchecked this
+        # spends the whole budget re-asserting the same thing: one real run
+        # burned 12 of 15 iterations that way.
+        barren_claims += 1
+        if barren_claims >= MAX_BARREN_CLAIMS:
+            return _handoff(ctx, llm, trace, budget, reason="loop_detected")
 
 
 def _handoff(
