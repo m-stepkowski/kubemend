@@ -66,9 +66,18 @@ class KubernetesConfig(BaseModel):
 
 class GitOpsConfig(BaseModel):
     backend: Literal["local", "gitea"] = "local"
-    repo_path: Path = Path("../kubemend-lab-gitops")
+    # Inside .lab rather than a sibling directory: the workspace is generated,
+    # disposable, and gitignored along with the credentials it is cloned with.
+    repo_path: Path = Path(".lab/gitops-workspace")
     writable_globs: list[str] = Field(default_factory=lambda: ["apps/**/values*.yaml"])
     base_branch: str = "main"
+
+    # Only used when backend == "gitea". The token is read from a file rather
+    # than held in config so it never lands in a committed file or a log line.
+    gitea_api_url: str = "http://localhost:3000/api/v1"
+    gitea_owner: str = "kubemend"
+    gitea_repo: str = "gitops"
+    gitea_token_file: Path = Path(".lab/gitea-token")
 
 
 class RunConfig(BaseSettings):

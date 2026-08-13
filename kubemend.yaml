@@ -32,8 +32,11 @@ kubernetes:
   context: kind-kubemend
 
 gitops:
+  # `local` is the committed default so a fresh checkout runs without a token.
+  # The lab demo opts in with KUBEMEND_GITOPS__BACKEND=gitea, which also needs
+  # the token `task lab:workspace` generates into .lab/.
   backend: local # local | gitea
-  repo_path: ../kubemend-lab-gitops
+  repo_path: .lab/gitops-workspace
   # The single write path. Anything outside these globs is refused by the
   # proposer before a file is touched.
   writable_globs:
