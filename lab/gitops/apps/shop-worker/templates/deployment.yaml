@@ -2,6 +2,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Chart.Name }}
+  # Explicit so `kyverno apply` on rendered output matches the
+  # namespace-scoped policy pack; Argo would otherwise inject it.
+  namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: {{ .Chart.Name }}
     app.kubernetes.io/managed-by: kubemend-lab

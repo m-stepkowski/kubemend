@@ -1,6 +1,9 @@
 version: "3"
 
 vars:
+  # Must match gitops.base_branch in kubemend.yaml.
+  GITOPS_BASE: main
+
   # Pinned tool binaries. The validator and lab bootstrap must use these
   # versions, never whatever happens to be on PATH (see CLAUDE.md). They are
   # downloaded into .lab/bin by `task lab:tools`.
@@ -81,7 +84,10 @@ tasks:
     # UF_HIDDEN flag set — and CPython skips hidden .pth files, so the script
     # then cannot import its own package. Clearing the flag first and invoking
     # the venv's binary directly keeps uv out of the critical moment.
-    deps: [fix:pth]
+    #
+    # sync, not fix:pth alone: a stale venv loses the editable .pth entirely,
+    # and rehiding a file that is not there does not bring the package back.
+    deps: [sync]
     cmds:
       - '{{.ROOT_DIR}}/.venv/bin/kubemend run {{.CLI_ARGS}}'
 
@@ -248,7 +254,7 @@ tasks:
           --wait --timeout 8m
 
   lab:seed:
-    desc: Create the gitops repo in gitea and push lab/gitops into it (idempotent)
+    desc: Create the gitops repo in gitea and force-push lab/gitops into it (resets history)
     deps: [lab:gitea]
     env:
       KUBECONFIG: '{{.KUBECONFIG_ADMIN}}'
@@ -293,6 +299,51 @@ tasks:
         rm -rf "$work"
         echo "pushed lab/gitops to gitea"
 
+  lab:workspace:
+    # Deliberately does NOT depend on lab:seed. Seeding force-pushes a fresh
+    # single-commit history, so re-cloning the workspace would silently undo any
+    # injected fault — which is exactly what made three lab runs diagnose a repo
+    # that had already been reset. lab:up seeds before it calls this.
+    desc: Clone the gitea gitops repo into a workspace the agent can write to
+    env:
+      KUBECONFIG: '{{.KUBECONFIG_ADMIN}}'
+    cmds:
+      - |
+        set -eu
+        WS={{.ROOT_DIR}}/.lab/gitops-workspace
+        PASS="$(cat {{.ROOT_DIR}}/.lab/gitea-admin-password)"
+        AUTH="Authorization: Basic $(printf 'kubemend:%s' "$PASS" | base64 | tr -d '\n')"
+
+        # Reuse a forward from `task lab:forward` if one is already up; starting a
+        # second one loses the race for :3000 and leaves a zombie behind.
+        if ! curl -fsS -o /dev/null http://localhost:3000/api/healthz 2>/dev/null; then
+          {{.LAB_BIN}}/kubectl -n gitea port-forward svc/gitea-http 3000:3000 >/dev/null 2>&1 &
+          PF=$!
+          trap 'kill $PF 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            curl -fsS -o /dev/null http://localhost:3000/api/healthz 2>/dev/null && break
+            sleep 1
+          done
+        fi
+
+        # An API token, not the admin password, is what the agent's backend uses.
+        if [ ! -f {{.ROOT_DIR}}/.lab/gitea-token ]; then
+          curl -fsS -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+            -d '{"name":"kubemend-agent","scopes":["write:repository"]}' \
+            http://localhost:3000/api/v1/users/kubemend/tokens \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha1"])' \
+            > {{.ROOT_DIR}}/.lab/gitea-token
+          chmod 600 {{.ROOT_DIR}}/.lab/gitea-token
+        fi
+
+        rm -rf "$WS"
+        git -c http.extraHeader="$AUTH" clone -q \
+          http://localhost:3000/kubemend/gitops.git "$WS"
+        git -C "$WS" config user.name kubemend
+        git -C "$WS" config user.email kubemend@localhost
+        git -C "$WS" config http.extraHeader "$AUTH"
+        echo "gitops workspace ready at $WS"
+
   lab:argocd:
     desc: Install Argo CD and register the demo Applications (idempotent)
     deps: [lab:seed]
@@ -321,6 +372,36 @@ tasks:
           --namespace observability --create-namespace \
           --values {{.ROOT_DIR}}/lab/bootstrap/values/promtail.yaml \
           --wait --timeout 5m
+
+  lab:break:
+    desc: "Inject a fault into the lab gitops repo, e.g. task lab:break -- bad-image-tag"
+    cmds:
+      - |
+        set -eu
+        WS={{.ROOT_DIR}}/.lab/gitops-workspace
+        test -d "$WS" || { echo "no workspace — run task lab:workspace" >&2; exit 1; }
+        cd "$WS"
+        git checkout -q {{.GITOPS_BASE}}
+        git pull -q
+        case "{{.CLI_ARGS}}" in
+          bad-image-tag)
+            # A tag that will never resolve, so the fault is ImagePullBackOff and
+            # not a subtly-working older image.
+            sed -i '' 's/^  tag: .*/  tag: "1.27-alpine-nonexistent"/' apps/shop-api/values.yaml
+            MSG="break: pin shop-api to a nonexistent image tag"
+            ;;
+          bad-probe-path)
+            sed -i '' 's|^    path: /$|    path: /healthz-does-not-exist|' apps/shop-api/values.yaml
+            MSG="break: point shop-api probes at a 404"
+            ;;
+          *)
+            echo "unknown scenario '{{.CLI_ARGS}}' (bad-image-tag | bad-probe-path)" >&2
+            exit 1
+            ;;
+        esac
+        git commit -q -am "$MSG"
+        git push -q origin {{.GITOPS_BASE}}
+        echo "injected {{.CLI_ARGS}}; Argo will sync it shortly"
 
   lab:kyverno:
     desc: Install Kyverno and apply the project policy pack (idempotent)
@@ -411,6 +492,7 @@ tasks:
       - task: lab:gitea
       - task: lab:seed
       - task: lab:argocd
+      - task: lab:workspace
       - task: lab:kyverno
       - task: lab:rbac
       - '{{.LAB_BIN}}/kubectl --kubeconfig {{.KUBECONFIG_ADMIN}} get applications -n argocd'
