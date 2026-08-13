@@ -59,6 +59,44 @@ Two layers reject a disallowed kind, and which one fires depends on the caller:
 
 Neither is the security boundary. The ServiceAccount in `lab/bootstrap/rbac.yaml` holds no verbs on `secrets` at all, so both layers are defence in depth over an identity that cannot make the request.
 
+## read_gitops_file  (tier: read, timeout 10s)
+
+```json
+{"name": "read_gitops_file",
+ "description": "Read one file from the GitOps repository as it currently stands on the base branch. Use this before propose_git_change so the contents you submit are the current file with your edit applied, rather than a reconstruction — propose_git_change replaces the whole file, so anything you omit is deleted. Chart templates and Chart.yaml are readable too, which is how you tell which values a chart requires.",
+ "input_schema": {"type": "object", "properties": {
+   "path": {"type": "string", "description": "Repo-relative path, e.g. apps/shop-api/values.yaml"}},
+  "required": ["path"]}}
+```
+
+Executor: confines every path to the repository root — absolute paths and any
+path escaping the root return `path_not_writable`'s read-side twin
+`path_not_readable`; `.git/**` is refused because it holds the push credential.
+Missing file ⇒ `not_found`. Payload `{path, content, truncated}`, content capped
+at 64 KB.
+
+Reads are deliberately **wider** than `writable_globs`: the model needs
+templates and Chart.yaml to know which values a chart consumes, and reading them
+has no side effect. This does not touch I5 — `propose_git_change` remains the
+only write path.
+
+Registered only when the write path is (`--read-only` runs omit both): with no
+proposer there is nothing to write and no reason to spend context on chart
+internals.
+
+## list_gitops_files  (tier: read, timeout 10s)
+
+```json
+{"name": "list_gitops_files",
+ "description": "List files in the GitOps repository matching a glob, e.g. 'apps/shop-api/**/*' to see a chart's layout before reading its templates.",
+ "input_schema": {"type": "object", "properties": {
+   "pattern": {"type": "string", "description": "Glob relative to the repository root; defaults to **/*"}},
+  "required": []}}
+```
+
+Executor: globs from the repository root, filters to files, excludes `.git/**`.
+Payload `{pattern, paths}`, all paths repo-relative.
+
 ## propose_git_change  (tier: propose, timeout 30s)
 
 ```json
