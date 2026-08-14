@@ -1,0 +1,40 @@
+{{ rationale }}
+
+## What changed
+
+{% for path in files %}
+- `{{ path }}`
+{%- endfor %}
+
+## Verification
+
+The kubemend harness re-ran the full validation pipeline against this branch
+independently of anything the model reported. This table is that result, not a
+self-assessment.
+
+| check | result | detail |
+|---|---|---|
+{% for check in checks -%}
+| {{ check.name }} | {{ "pass" if check.passed else "**fail**" }} | {{ check.detail }} |
+{% endfor %}
+{% if resources %}
+### Resources this change touches
+
+{% for kind, namespace, name in resources -%}
+- `{{ kind }}/{{ namespace }}/{{ name }}`
+{% endfor %}
+All of them fall inside the declared scope: namespace `{{ scope.namespace }}`,
+app `{{ scope.app }}`.
+{% endif %}
+
+## Scope and limits
+
+This change was produced automatically from an incident investigation. The agent
+can only edit Helm values files — it has no cluster write access and no ability
+to change chart templates — so the blast radius is bounded by what
+`{{ writable_globs | join(", ") }}` can express.
+
+{% if incident_ref %}Incident: {{ incident_ref }}{% endif %}
+
+Review it as you would any other pull request. Nothing is applied until you
+merge and Argo CD syncs.

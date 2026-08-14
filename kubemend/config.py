@@ -13,11 +13,15 @@ is absent.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
-import yaml
 from pydantic import BaseModel, ConfigDict, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    YamlConfigSettingsSource,
+)
 
 
 class ModelSpec(BaseModel):
@@ -66,9 +70,33 @@ class KubernetesConfig(BaseModel):
 
 class GitOpsConfig(BaseModel):
     backend: Literal["local", "gitea"] = "local"
-    repo_path: Path = Path("../kubemend-lab-gitops")
+    # Inside .lab rather than a sibling directory: the workspace is generated,
+    # disposable, and gitignored along with the credentials it is cloned with.
+    repo_path: Path = Path(".lab/gitops-workspace")
     writable_globs: list[str] = Field(default_factory=lambda: ["apps/**/values*.yaml"])
     base_branch: str = "main"
+
+    # Only used when backend == "gitea". The token is read from a file rather
+    # than held in config so it never lands in a committed file or a log line.
+    gitea_api_url: str = "http://localhost:3000/api/v1"
+    gitea_owner: str = "kubemend"
+    gitea_repo: str = "gitops"
+    gitea_token_file: Path = Path(".lab/gitea-token")
+
+
+class ArgoCdConfig(BaseModel):
+    """Used by the verification gate's diff stage (ARCHITECTURE.md §5).
+
+    Argo computes the diff under its own identity, so the agent process never
+    needs a cluster credential that can write. `kubectl diff` cannot be the
+    primary path: it is a dry-run apply, and Kubernetes authorizes dry-run
+    exactly like a real write, so the read-only ServiceAccount is refused.
+    """
+
+    server: str = "localhost:8080"
+    # The lab forwards Argo's HTTP port, so there is no TLS to verify.
+    plaintext: bool = True
+    token_file: Path = Path(".lab/argocd-token")
 
 
 class RunConfig(BaseSettings):
@@ -84,14 +112,39 @@ class RunConfig(BaseSettings):
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     kubernetes: KubernetesConfig = Field(default_factory=KubernetesConfig)
     gitops: GitOpsConfig = Field(default_factory=GitOpsConfig)
+    argocd: ArgoCdConfig = Field(default_factory=ArgoCdConfig)
 
 
 def load_config(path: Path | str = Path("kubemend.yaml")) -> RunConfig:
     """Read kubemend.yaml. A missing file yields defaults, not an error — the
     unit suite and `kubemend --help` must work in a bare checkout.
+
+    The file is loaded as a *settings source* rather than as constructor
+    arguments. Init arguments outrank environment variables in pydantic-settings,
+    so passing the parsed YAML as kwargs silently disabled every KUBEMEND_*
+    override for any key the file happened to mention — which is nearly all of
+    them. Precedence here is env > file > defaults, which is what this module's
+    docstring has always promised.
     """
     source = Path(path)
     if not source.exists():
         return RunConfig()
-    data: dict[str, Any] = yaml.safe_load(source.read_text()) or {}
-    return RunConfig(**data)
+
+    class _FileBackedConfig(RunConfig):
+        @classmethod
+        def settings_customise_sources(
+            cls,
+            settings_cls: type[BaseSettings],
+            init_settings: PydanticBaseSettingsSource,
+            env_settings: PydanticBaseSettingsSource,
+            dotenv_settings: PydanticBaseSettingsSource,
+            file_secret_settings: PydanticBaseSettingsSource,
+        ) -> tuple[PydanticBaseSettingsSource, ...]:
+            return (
+                init_settings,
+                env_settings,
+                YamlConfigSettingsSource(settings_cls, yaml_file=source),
+                file_secret_settings,
+            )
+
+    return _FileBackedConfig()

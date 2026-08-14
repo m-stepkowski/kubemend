@@ -8,9 +8,10 @@ the whole harness against a real cluster before the write path exists.
 
 from __future__ import annotations
 
+import textwrap
 import uuid
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import anthropic
 import typer
@@ -19,12 +20,24 @@ from kubemend.config import RunConfig, load_config
 from kubemend.core.loop import run as run_loop
 from kubemend.core.model import RunResult, Scope, Task, Verdict
 from kubemend.llm.anthropic_client import AnthropicClient
+from kubemend.prompts import render
+from kubemend.tools.gitops.backend import GitBackend
+from kubemend.tools.gitops.gitea_backend import GiteaBackend
+from kubemend.tools.gitops.local_backend import LocalGitBackend
+from kubemend.tools.gitops.proposer import Proposer, propose_tool_spec
+from kubemend.tools.gitops.reader import (
+    GitOpsReader,
+    list_gitops_files_spec,
+    read_gitops_file_spec,
+)
+from kubemend.tools.gitops.validator import Validator
 from kubemend.tools.kubernetes.api import KubeApiClient
 from kubemend.tools.kubernetes.reader import KubernetesReader, k8s_tool_spec
 from kubemend.tools.observability.loki import LokiProvider, logs_tool_spec
 from kubemend.tools.observability.prometheus import PrometheusProvider, metrics_tool_spec
 from kubemend.tools.registry import ToolRegistry
 from kubemend.trace.recorder import TraceRecorder
+from kubemend.verify.gate import PipelineGate, validate_tool_spec
 
 app = typer.Typer(
     name="kubemend",
@@ -81,6 +94,51 @@ def build_read_only_registry(cfg: RunConfig) -> ToolRegistry:
     )
 
 
+def build_write_path(
+    cfg: RunConfig, scope: Scope, run_id: str, lab_bin: Path
+) -> tuple[Proposer, PipelineGate]:
+    """Assemble the proposer, validator and gate for a run that may write.
+
+    The binaries come from the Taskfile-managed directory rather than PATH: a
+    developer machine here had a helm a full major version ahead of the pinned
+    one, which would render different manifests than CI does.
+    """
+    backend: GitBackend = LocalGitBackend(cfg.gitops.repo_path)
+    if cfg.gitops.backend == "gitea":
+        token_file = Path(cfg.gitops.gitea_token_file).expanduser()
+        if not token_file.exists():
+            raise typer.BadParameter(
+                f"gitops.backend is 'gitea' but no token at {token_file} — run `task lab:workspace`"
+            )
+        backend = GiteaBackend(
+            cfg.gitops.repo_path,
+            api_url=cfg.gitops.gitea_api_url,
+            owner=cfg.gitops.gitea_owner,
+            repo=cfg.gitops.gitea_repo,
+            token=token_file.read_text().strip(),
+        )
+    proposer = Proposer(
+        backend=backend,
+        writable_globs=list(cfg.gitops.writable_globs),
+        base_branch=cfg.gitops.base_branch,
+        run_id=run_id,
+    )
+    argocd_token_file = Path(cfg.argocd.token_file).expanduser()
+    validator = Validator(
+        repo_path=Path(cfg.gitops.repo_path).expanduser().resolve(),
+        scope=scope,
+        helm_bin=lab_bin / "helm",
+        kyverno_bin=lab_bin / "kyverno",
+        kubectl_bin=lab_bin / "kubectl",
+        policies_dir=Path("policies").resolve(),
+        argocd_bin=lab_bin / "argocd",
+        argocd_server=cfg.argocd.server,
+        argocd_token=(argocd_token_file.read_text().strip() if argocd_token_file.is_file() else ""),
+        argocd_plaintext=cfg.argocd.plaintext,
+    )
+    return proposer, PipelineGate(proposer=proposer, validator=validator)
+
+
 @app.command()
 def run(
     task: Annotated[
@@ -91,6 +149,9 @@ def run(
     ],
     app_name: Annotated[str, typer.Option("--app", help="Application the incident is scoped to")],
     window: Annotated[str, typer.Option("--window", help="Time window of interest")] = "-30m",
+    read_only: Annotated[
+        bool, typer.Option("--read-only", help="Investigate only; register no write path")
+    ] = False,
     model: Annotated[
         str, typer.Option("--model", help="Which tier drives agent turns: main | cheap")
     ] = "main",
@@ -109,8 +170,39 @@ def run(
     elif model != "main":
         typer.echo(f"--model must be 'main' or 'cheap', got {model!r}", err=True)
         raise typer.Exit(code=2)
-    incident = Task(statement=task, scope=Scope(namespace=namespace, app=app_name), window=window)
-    trace = TraceRecorder.open(Path("traces") / f"{uuid.uuid4().hex[:12]}.jsonl")
+    scope = Scope(namespace=namespace, app=app_name)
+    incident = Task(statement=task, scope=scope, window=window)
+    run_id = uuid.uuid4().hex[:12]
+    trace = TraceRecorder.open(Path("traces") / f"{run_id}.jsonl")
+
+    registry = build_read_only_registry(cfg)
+    gate: Any = ReadOnlyGate()
+    proposer: Proposer | None = None
+
+    workspace = Path(cfg.gitops.repo_path).expanduser()
+    if read_only:
+        typer.echo("read-only: no write path registered")
+    elif not (workspace / ".git").exists():
+        # Refusing to guess is better than silently degrading: a run that
+        # cannot propose looks identical in the report to one that chose not to.
+        typer.echo(
+            f"no GitOps workspace at {workspace} — running read-only. "
+            "Run `task lab:workspace` to create one.",
+            err=True,
+        )
+    else:
+        proposer, gate = build_write_path(cfg, scope, run_id, Path(".lab/bin").resolve())
+        # Reads are registered with the write path, not with the read-only
+        # tools: without a proposer there is nothing to write and no reason to
+        # put chart internals into context.
+        reader = GitOpsReader(
+            Path(cfg.gitops.repo_path).expanduser().resolve(),
+            base_branch=cfg.gitops.base_branch,
+        )
+        registry.register(read_gitops_file_spec(reader))
+        registry.register(list_gitops_files_spec(reader))
+        registry.register(propose_tool_spec(proposer))
+        registry.register(validate_tool_spec(gate))
 
     # Deliberately no ANTHROPIC_API_KEY precondition. The SDK resolves
     # credentials from several sources in order — the env var, an
@@ -131,11 +223,40 @@ def run(
         incident,
         cfg,
         llm=llm,
-        registry=build_read_only_registry(cfg),
-        gate=ReadOnlyGate(),
+        registry=registry,
+        gate=gate,
         trace=trace,
     )
+
+    if result.success and proposer is not None:
+        result.pr_ref = _open_pr(proposer, incident, result, cfg)
     _report(result, model_name=cfg.model.main.name)
+
+
+def _open_pr(proposer: Proposer, incident: Task, result: RunResult, cfg: RunConfig) -> str | None:
+    """Turn a verified proposal into something a human can review.
+
+    The body is generated from the gate's own verdict rather than from anything
+    the model said about its work — that check table is the reviewer's evidence.
+    """
+    verdict = result.verdict
+    body = render(
+        "pr_body.md.j2",
+        rationale=proposer.rationale,
+        files=proposer.files_written,
+        checks=verdict.checks if verdict else [],
+        resources=(verdict.diff_summary.resources if verdict and verdict.diff_summary else []),
+        scope=incident.scope,
+        writable_globs=list(cfg.gitops.writable_globs),
+        incident_ref=proposer.incident_ref,
+    )
+    if proposer.rationale:
+        summary = textwrap.shorten(proposer.rationale.splitlines()[0], width=72, placeholder="…")
+        title = f"kubemend: {summary}"
+    else:
+        title = "kubemend: proposed fix"
+    pr = proposer.open_pr(title, body)
+    return pr.url if pr else None
 
 
 def _report(result: RunResult, *, model_name: str = "") -> None:

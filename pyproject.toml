@@ -48,6 +48,12 @@ extend-exclude = ["*.md"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "ANN", "RUF"]
 
+[tool.ruff.lint.per-file-ignores]
+# The validator fixtures reproduce real kubectl and helm output verbatim, long
+# lines included. The parsers under test are regexes over those exact lines, so
+# rewrapping the fixtures would make them lie about the format.
+"tests/unit/test_validator.py" = ["E501"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
