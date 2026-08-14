@@ -20,6 +20,11 @@ from kubemend.tools.base import ClientError, TransportError
 from kubemend.tools.gitops.backend import Branch, Commit, PrRef
 from kubemend.tools.gitops.local_backend import LocalGitBackend
 
+# Gitea has no draft flag on its create-PR API: a pull request is a draft if and
+# only if its title carries this prefix. Sending draft=True in the payload is
+# silently ignored, which is how the first lab PR came out review-ready.
+WIP_PREFIX = "WIP:"
+
 
 class GiteaBackend:
     def __init__(
@@ -63,7 +68,7 @@ class GiteaBackend:
         payload = {
             "head": branch.name,
             "base": branch.base,
-            "title": title,
+            "title": _as_draft(title),
             "body": body,
         }
         url = f"{self.api_url}/repos/{self.owner}/{self.repo}/pulls"
@@ -98,3 +103,10 @@ class GiteaBackend:
         except (httpx.HTTPError, ValueError):
             pass
         return ""
+
+
+def _as_draft(title: str) -> str:
+    """Mark the title so gitea files the PR as a draft, without double-prefixing."""
+    if title.upper().startswith(WIP_PREFIX):
+        return title
+    return f"{WIP_PREFIX} {title}"

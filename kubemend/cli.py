@@ -8,6 +8,7 @@ the whole harness against a real cluster before the write path exists.
 
 from __future__ import annotations
 
+import textwrap
 import uuid
 from pathlib import Path
 from typing import Annotated, Any
@@ -122,6 +123,7 @@ def build_write_path(
         base_branch=cfg.gitops.base_branch,
         run_id=run_id,
     )
+    argocd_token_file = Path(cfg.argocd.token_file).expanduser()
     validator = Validator(
         repo_path=Path(cfg.gitops.repo_path).expanduser().resolve(),
         scope=scope,
@@ -129,6 +131,10 @@ def build_write_path(
         kyverno_bin=lab_bin / "kyverno",
         kubectl_bin=lab_bin / "kubectl",
         policies_dir=Path("policies").resolve(),
+        argocd_bin=lab_bin / "argocd",
+        argocd_server=cfg.argocd.server,
+        argocd_token=(argocd_token_file.read_text().strip() if argocd_token_file.is_file() else ""),
+        argocd_plaintext=cfg.argocd.plaintext,
     )
     return proposer, PipelineGate(proposer=proposer, validator=validator)
 
@@ -244,11 +250,11 @@ def _open_pr(proposer: Proposer, incident: Task, result: RunResult, cfg: RunConf
         writable_globs=list(cfg.gitops.writable_globs),
         incident_ref=proposer.incident_ref,
     )
-    title = (
-        f"kubemend: {proposer.rationale.splitlines()[0][:60]}"
-        if proposer.rationale
-        else "kubemend: proposed fix"
-    )
+    if proposer.rationale:
+        summary = textwrap.shorten(proposer.rationale.splitlines()[0], width=72, placeholder="…")
+        title = f"kubemend: {summary}"
+    else:
+        title = "kubemend: proposed fix"
     pr = proposer.open_pr(title, body)
     return pr.url if pr else None
 

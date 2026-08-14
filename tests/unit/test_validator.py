@@ -11,7 +11,9 @@ output, so none of this needs helm, kyverno, or a cluster.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import json
+import os
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -65,9 +67,16 @@ class ScriptedRunner:
     def __init__(self, **results: CommandResult) -> None:
         self._results = results
         self.calls: list[list[str]] = []
+        self.envs: list[dict[str, str] | None] = []
 
-    def run(self, cmd: Sequence[str], cwd: Path | None = None) -> CommandResult:
+    def run(
+        self,
+        cmd: Sequence[str],
+        cwd: Path | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> CommandResult:
         self.calls.append(list(cmd))
+        self.envs.append(dict(env) if env else None)
         for key, result in self._results.items():
             if key in cmd[0]:
                 return result
@@ -273,3 +282,104 @@ def test_diff_manifest_file_is_removed_even_when_kubectl_fails(tmp_path: Path) -
     _validator(runner, tmp_path).validate(["shop-api"])
 
     assert list(tmp_path.glob(".kubemend-*.yaml")) == []
+
+
+# -- diff via Argo CD (the §5 primary) ------------------------------------
+
+ARGOCD_BIN = Path("/pinned/argocd")
+
+
+def _argo_validator(runner: ScriptedRunner, tmp_path: Path) -> Validator:
+    return Validator(
+        repo_path=tmp_path,
+        scope=SCOPE,
+        helm_bin=Path("/pinned/helm"),
+        kyverno_bin=Path("/pinned/kyverno"),
+        kubectl_bin=Path("/pinned/kubectl"),
+        policies_dir=Path("/repo/policies"),
+        argocd_bin=ARGOCD_BIN,
+        argocd_server="localhost:8080",
+        argocd_token="jwt-token",
+        runner=runner,
+    )
+
+
+def _rendering_runner(**extra: CommandResult) -> ScriptedRunner:
+    return ScriptedRunner(
+        helm=CommandResult(0, stdout="kind: Deployment\n"),
+        kyverno=CommandResult(0, stdout="pass: 6, fail: 0, warn: 0, error: 0, skip: 0\n"),
+        **extra,
+    )
+
+
+def test_argocd_is_preferred_over_kubectl_when_a_token_is_present(tmp_path: Path) -> None:
+    """kubectl diff is a dry-run apply, which the read-only SA cannot perform."""
+    runner = _rendering_runner(argocd=CommandResult(1, stdout=ARGOCD_DIFF))
+
+    verdict = _argo_validator(runner, tmp_path).validate(["shop-api"])
+
+    assert verdict.passed is True
+    assert any(c[0] == str(ARGOCD_BIN) for c in runner.calls)
+    assert not any(c[0] == "/pinned/kubectl" for c in runner.calls)
+
+
+def test_argocd_diff_runs_with_path_pinned_to_the_managed_binaries(tmp_path: Path) -> None:
+    """argocd shells out to `helm` from PATH; an unpinned one renders differently."""
+    runner = _rendering_runner(argocd=CommandResult(1, stdout=ARGOCD_DIFF))
+
+    _argo_validator(runner, tmp_path).validate(["shop-api"])
+
+    index = next(i for i, c in enumerate(runner.calls) if c[0] == str(ARGOCD_BIN))
+    env = runner.envs[index]
+    assert env is not None
+    assert env["PATH"].split(os.pathsep)[0] == "/pinned"
+
+
+def test_argocd_exit_one_means_differences_not_failure(tmp_path: Path) -> None:
+    runner = _rendering_runner(argocd=CommandResult(1, stdout=ARGOCD_DIFF))
+
+    verdict = _argo_validator(runner, tmp_path).validate(["shop-api"])
+
+    diff = next(c for c in verdict.checks if c.name == "diff")
+    assert diff.passed is True
+
+
+def test_argocd_empty_diff_is_no_effective_change(tmp_path: Path) -> None:
+    """Catches the model 'fixing' a value by rewriting it to itself."""
+    runner = _rendering_runner(argocd=CommandResult(0, stdout=""))
+
+    verdict = _argo_validator(runner, tmp_path).validate(["shop-api"])
+
+    diff = next(c for c in verdict.checks if c.name == "diff")
+    assert diff.passed is False
+    assert "no_effective_change" in diff.detail
+
+
+def test_argocd_transport_failure_is_reported_not_swallowed(tmp_path: Path) -> None:
+    runner = _rendering_runner(
+        argocd=CommandResult(20, stderr="rpc error: code = Unavailable desc = connection refused")
+    )
+
+    verdict = _argo_validator(runner, tmp_path).validate(["shop-api"])
+
+    diff = next(c for c in verdict.checks if c.name == "diff")
+    assert diff.passed is False
+    assert "connection refused" in diff.detail
+
+
+def test_argocd_token_never_appears_in_a_check_detail(tmp_path: Path) -> None:
+    """The token is a CLI argument, so a naive error passthrough would leak it."""
+    runner = _rendering_runner(argocd=CommandResult(20, stderr="failed: --auth-token jwt-token"))
+
+    verdict = _argo_validator(runner, tmp_path).validate(["shop-api"])
+
+    assert "jwt-token" not in json.dumps([c.detail for c in verdict.checks])
+
+
+def test_without_a_token_the_kubectl_fallback_is_used(tmp_path: Path) -> None:
+    runner = _rendering_runner(kubectl=CommandResult(1, stdout=KUBECTL_DIFF))
+
+    verdict = _validator(runner, tmp_path).validate(["shop-api"])
+
+    assert verdict.passed is True
+    assert any(c[0] == "/pinned/kubectl" for c in runner.calls)

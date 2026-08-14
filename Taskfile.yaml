@@ -373,6 +373,48 @@ tasks:
           --values {{.ROOT_DIR}}/lab/bootstrap/values/promtail.yaml \
           --wait --timeout 5m
 
+  lab:argocd-token:
+    desc: Generate an Argo CD auth token for the verification gate into .lab/
+    env:
+      KUBECONFIG: '{{.KUBECONFIG_ADMIN}}'
+    cmds:
+      - |
+        set -eu
+        # The gate needs Argo to compute the diff, because kubectl diff is a
+        # dry-run apply and RBAC authorizes dry-run exactly like a real write —
+        # the agent's read-only ServiceAccount is refused.
+        if [ -s {{.ROOT_DIR}}/.lab/argocd-token ]; then
+          echo "argocd token already present"; exit 0
+        fi
+
+        if ! curl -fsS -o /dev/null http://localhost:8080/healthz 2>/dev/null; then
+          {{.LAB_BIN}}/kubectl -n argocd port-forward svc/argocd-server 8080:80 >/dev/null 2>&1 &
+          PF=$!
+          trap 'kill $PF 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            curl -fsS -o /dev/null http://localhost:8080/healthz 2>/dev/null && break
+            sleep 1
+          done
+        fi
+
+        PW=$({{.LAB_BIN}}/kubectl -n argocd get secret argocd-initial-admin-secret \
+          -o jsonpath='{.data.password}' | base64 -d)
+        {{.LAB_BIN}}/argocd login localhost:8080 \
+          --username admin --password "$PW" --plaintext --grpc-web >/dev/null 2>&1
+
+        # The CLI stores the session JWT in its own config; lifting it from there
+        # avoids enabling an apiKey capability on the admin account.
+        {{.LAB_BIN}}/argocd account get-user-info --plaintext >/dev/null 2>&1
+        # The venv python, not the system one: pyyaml is a project dependency
+        # and system python3 on macOS has no third-party packages.
+        {{.ROOT_DIR}}/.venv/bin/python - <<'EOF' > {{.ROOT_DIR}}/.lab/argocd-token
+        import os, yaml
+        cfg = yaml.safe_load(open(os.path.expanduser("~/.config/argocd/config")))
+        print(cfg["users"][0]["auth-token"])
+        EOF
+        chmod 600 {{.ROOT_DIR}}/.lab/argocd-token
+        echo "wrote argocd token to .lab/argocd-token"
+
   lab:break:
     desc: "Inject a fault into the lab gitops repo, e.g. task lab:break -- bad-image-tag"
     cmds:
@@ -493,6 +535,7 @@ tasks:
       - task: lab:seed
       - task: lab:argocd
       - task: lab:workspace
+      - task: lab:argocd-token
       - task: lab:kyverno
       - task: lab:rbac
       - '{{.LAB_BIN}}/kubectl --kubeconfig {{.KUBECONFIG_ADMIN}} get applications -n argocd'

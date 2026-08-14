@@ -17,9 +17,10 @@ M3 acceptance list be driven from a fixture rather than a broken cluster.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -42,7 +43,12 @@ class CommandResult:
 
 
 class CommandRunner(Protocol):
-    def run(self, cmd: Sequence[str], cwd: Path | None = None) -> CommandResult: ...
+    def run(
+        self,
+        cmd: Sequence[str],
+        cwd: Path | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> CommandResult: ...
 
 
 class SubprocessRunner:
@@ -52,11 +58,17 @@ class SubprocessRunner:
     def __init__(self, timeout_s: float = 120.0) -> None:
         self.timeout_s = timeout_s
 
-    def run(self, cmd: Sequence[str], cwd: Path | None = None) -> CommandResult:
+    def run(
+        self,
+        cmd: Sequence[str],
+        cwd: Path | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> CommandResult:
         try:
             proc = subprocess.run(
                 list(cmd),
                 cwd=str(cwd) if cwd else None,
+                env={**os.environ, **env} if env else None,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_s,
@@ -131,7 +143,18 @@ class Validator:
     kubectl_bin: Path
     policies_dir: Path
     kube_version: str = "1.31.2"
+    # Argo CD is the primary diff engine (§5). Without a token the stage falls
+    # back to kubectl, which only works against a cluster identity permitted to
+    # dry-run apply — not the read-only ServiceAccount a normal run holds.
+    argocd_bin: Path | None = None
+    argocd_server: str = ""
+    argocd_token: str = ""
+    argocd_plaintext: bool = True
     runner: CommandRunner = field(default_factory=SubprocessRunner)
+
+    @property
+    def _uses_argocd(self) -> bool:
+        return bool(self.argocd_bin and self.argocd_token)
 
     def validate(self, apps: Sequence[str]) -> Verdict:
         """Run the four stages, stopping at the first failure.
@@ -152,7 +175,7 @@ class Validator:
         if not policy_check.passed:
             return Verdict(passed=False, checks=checks)
 
-        diff_text, diff_check = self._diff(rendered)
+        diff_text, diff_check = self._diff(rendered, apps)
         checks.append(diff_check)
         if not diff_check.passed:
             return Verdict(passed=False, checks=checks)
@@ -229,7 +252,63 @@ class Validator:
             )
         return CheckResult("kyverno", True, _policy_summary(result.stdout))
 
-    def _diff(self, rendered: str) -> tuple[str, CheckResult]:
+    def _diff(self, rendered: str, apps: Sequence[str]) -> tuple[str, CheckResult]:
+        if self._uses_argocd:
+            return self._argocd_diff(apps)
+        return self._kubectl_diff(rendered)
+
+    def _argocd_diff(self, apps: Sequence[str]) -> tuple[str, CheckResult]:
+        """Diff each app's local chart against what Argo has live.
+
+        Argo shells out to `helm` from PATH, so PATH is pinned to the directory
+        holding the Taskfile-managed binaries — otherwise the gate would render
+        with whatever helm the developer happens to have installed and validate
+        manifests Argo would never produce.
+        """
+        env = {"PATH": f"{self.helm_bin.parent}{os.pathsep}{os.environ.get('PATH', '')}"}
+        chunks: list[str] = []
+        for app in apps:
+            cmd = [
+                str(self.argocd_bin),
+                "app",
+                "diff",
+                app,
+                "--local",
+                str(self.repo_path / "apps" / app),
+                "--server",
+                self.argocd_server,
+                "--auth-token",
+                self.argocd_token,
+            ]
+            if self.argocd_plaintext:
+                cmd.append("--plaintext")
+            result = self.runner.run(cmd, cwd=self.repo_path, env=env)
+            # argocd exits 1 when differences exist, which is success here.
+            if result.returncode not in (0, 1):
+                # The token is a command-line argument, so argocd echoes it back
+                # in some errors. Check details reach the model's context and the
+                # PR body, so it has to come out here.
+                detail = result.stderr.strip().replace(self.argocd_token, "***")
+                return "", CheckResult(
+                    name="diff",
+                    passed=False,
+                    detail=(detail[:400] or f"argocd diff failed for {app}"),
+                )
+            chunks.append(result.stdout)
+
+        combined = "\n".join(chunks)
+        if not combined.strip():
+            return "", CheckResult(
+                name="diff",
+                passed=False,
+                detail=(
+                    "no_effective_change: the rendered manifests are identical to what is "
+                    "already running, so this proposal changes nothing."
+                ),
+            )
+        return combined, CheckResult("diff", True, "the change produces a real diff")
+
+    def _kubectl_diff(self, rendered: str) -> tuple[str, CheckResult]:
         """Diff the *rendered* manifests against the cluster.
 
         Pointing kubectl at the repository directory instead reads every file in

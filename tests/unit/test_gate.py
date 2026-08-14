@@ -172,3 +172,24 @@ def test_local_backend_refuses_to_touch_the_base_branch(tmp_path: Path) -> None:
 
     with pytest.raises(ClientError, match="base branch"):
         backend.write_files(Branch(name="main", base="main"), {"a.yaml": "x: 1\n"}, "msg")
+
+
+# -- draft semantics ------------------------------------------------------
+
+
+def test_gitea_pr_title_is_marked_wip_so_gitea_files_it_as_a_draft() -> None:
+    """Gitea has no draft flag on its API — the title prefix IS the mechanism.
+
+    The first lab PR came out review-ready because the payload's draft=True was
+    silently ignored, which quietly breaks the "draft PRs only" invariant.
+    """
+    from kubemend.tools.gitops.gitea_backend import WIP_PREFIX, _as_draft
+
+    assert _as_draft("kubemend: fix the image tag").startswith(WIP_PREFIX)
+
+
+def test_wip_prefix_is_not_applied_twice() -> None:
+    from kubemend.tools.gitops.gitea_backend import _as_draft
+
+    once = _as_draft("kubemend: fix")
+    assert _as_draft(once) == once
