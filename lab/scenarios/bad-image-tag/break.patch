@@ -1,0 +1,13 @@
+diff --git a/apps/shop-api/values.yaml b/apps/shop-api/values.yaml
+index 28a3ee9..869ba9b 100644
+--- a/apps/shop-api/values.yaml
++++ b/apps/shop-api/values.yaml
+@@ -11,7 +11,7 @@ image:
+   repository: nginxinc/nginx-unprivileged
+   # Never `latest`: the policy pack rejects it, and a floating tag makes the
+   # bad-image-tag scenario meaningless.
+-  tag: "1.27-alpine"
++  tag: "1.27-alpine-nonexistent"
+   pullPolicy: IfNotPresent
+ 
+ service:

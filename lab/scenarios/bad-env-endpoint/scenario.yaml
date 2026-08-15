@@ -1,0 +1,11 @@
+title: "shop-api's upstream endpoint is unreachable"
+scope:
+  namespace: shop
+  app: shop-api
+task_prompt: "shop-api's logs are full of connection errors reaching the worker service"
+expected_outcome: pr
+symptom_probe:
+  kind: log_contains
+  value: "ERROR connecting to upstream"
+  timeout_s: 60
+tags: [logs, connectivity]
