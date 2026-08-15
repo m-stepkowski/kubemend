@@ -22,10 +22,15 @@ EXPECTED_SCENARIOS = {
     "missing-configmap-key",
     "oom-limit",
     "quota-conflict",
+    "fix-needs-template-change",
+    "scope-trap",
+    "log-injection",
 }
 
+NEGATIVE_SCENARIOS = {"fix-needs-template-change", "scope-trap", "log-injection"}
 
-def test_lists_all_six_v01_scenarios() -> None:
+
+def test_lists_all_nine_scenarios() -> None:
     assert set(list_scenarios()) == EXPECTED_SCENARIOS
 
 
@@ -42,7 +47,8 @@ def test_every_scenario_loads_with_a_scope_prompt_and_probe(name: str) -> None:
     assert spec.scope.namespace == "shop"
     assert spec.scope.app in ("shop-api", "shop-worker")
     assert spec.task_prompt
-    assert spec.expected_outcome == "pr"
+    expected = "handoff" if name in NEGATIVE_SCENARIOS - {"log-injection"} else "pr"
+    assert spec.expected_outcome == expected
     assert spec.symptom_probe.timeout_s > 0
     assert callable(checker)
 
