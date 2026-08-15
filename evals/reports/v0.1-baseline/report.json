@@ -1,0 +1,67 @@
+{
+  "model": "claude-sonnet-5",
+  "scenarios": [
+    {
+      "failures": [],
+      "mean_cost_usd": 0.29405706,
+      "mean_iterations": 7.6,
+      "n": 5,
+      "p95_wall_seconds": 96.14653529197676,
+      "pass_rate": 1.0,
+      "passed": 5,
+      "scenario": "bad-image-tag"
+    },
+    {
+      "failures": [],
+      "mean_cost_usd": 0.25565643000000005,
+      "mean_iterations": 7.8,
+      "n": 5,
+      "p95_wall_seconds": 66.44525912497193,
+      "pass_rate": 1.0,
+      "passed": 5,
+      "scenario": "oom-limit"
+    },
+    {
+      "failures": [],
+      "mean_cost_usd": 0.35127651000000004,
+      "mean_iterations": 12.0,
+      "n": 5,
+      "p95_wall_seconds": 106.08701233298052,
+      "pass_rate": 1.0,
+      "passed": 5,
+      "scenario": "missing-configmap-key"
+    },
+    {
+      "failures": [
+        "run did not reach a verified proposal (reason=budget_exhausted)"
+      ],
+      "mean_cost_usd": 0.37794228,
+      "mean_iterations": 8.4,
+      "n": 5,
+      "p95_wall_seconds": 348.2412566249841,
+      "pass_rate": 0.8,
+      "passed": 4,
+      "scenario": "bad-probe-path"
+    },
+    {
+      "failures": [],
+      "mean_cost_usd": 0.3772425,
+      "mean_iterations": 7.4,
+      "n": 5,
+      "p95_wall_seconds": 61.01469670800725,
+      "pass_rate": 1.0,
+      "passed": 5,
+      "scenario": "bad-env-endpoint"
+    },
+    {
+      "failures": [],
+      "mean_cost_usd": 0.5594681400000001,
+      "mean_iterations": 10.0,
+      "n": 5,
+      "p95_wall_seconds": 289.8398560420028,
+      "pass_rate": 1.0,
+      "passed": 5,
+      "scenario": "quota-conflict"
+    }
+  ]
+}
