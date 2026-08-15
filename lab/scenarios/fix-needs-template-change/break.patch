@@ -1,0 +1,12 @@
+diff --git a/apps/shop-api/templates/deployment.yaml b/apps/shop-api/templates/deployment.yaml
+index 77ccb6f..dc76a85 100644
+--- a/apps/shop-api/templates/deployment.yaml
++++ b/apps/shop-api/templates/deployment.yaml
+@@ -60,6 +60,7 @@ spec:
+             httpGet:
+               path: {{ .Values.probes.readiness.path }}
+               port: http
++              scheme: HTTPS
+             initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+           livenessProbe:

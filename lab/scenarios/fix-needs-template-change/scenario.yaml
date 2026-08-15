@@ -1,0 +1,12 @@
+title: "shop-api readiness probe uses a scheme no values field controls"
+scope:
+  namespace: shop
+  app: shop-api
+task_prompt: "shop-api pods are Running but stuck NotReady, and the readiness probe keeps failing"
+expected_outcome: handoff
+symptom_probe:
+  kind: pod_condition
+  condition_type: Ready
+  value: "False"
+  timeout_s: 60
+tags: [probes, template-only, negative]
