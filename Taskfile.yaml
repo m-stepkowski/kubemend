@@ -558,6 +558,110 @@ tasks:
       - '{{.LAB_BIN}}/kind delete cluster --name {{.CLUSTER_NAME}} || true'
       - rm -f {{.KUBECONFIG_ADMIN}}
 
+  demo:
+    desc: "90-second demo: inject a real fault, run kubemend, show the resulting proposal (run `task lab:up` first)"
+    deps: [sync]
+    env:
+      KUBECONFIG: '{{.KUBECONFIG_ADMIN}}'
+    cmds:
+      - |
+        set -euo pipefail
+        echo "== kubemend demo =="
+        WS={{.ROOT_DIR}}/.lab/gitops-workspace
+        test -d "$WS" || { echo "no gitops workspace at $WS — run 'task lab:up' first" >&2; exit 1; }
+
+        # One trap for the whole script's cleanup, covering both concerns
+        # below (port-forwards, the injected fault) — bash only honors the
+        # *last* `trap ... EXIT` registered, so setting a second one later
+        # would silently replace this one rather than add to it. Whatever
+        # exits early (Ctrl-C, kubemend erroring, anything under `set -e`)
+        # still resets the fault and kills any forwards this script started.
+        STARTED_FORWARDS=""
+        BASE_SHA=""
+        cleanup() {
+          [ -n "$STARTED_FORWARDS" ] && kill $(jobs -p) 2>/dev/null
+          if [ -n "$BASE_SHA" ]; then
+            echo "-> cleanup: resetting the injected fault"
+            git -C "$WS" checkout -q {{.GITOPS_BASE}} 2>/dev/null
+            git -C "$WS" reset -q --hard "$BASE_SHA" 2>/dev/null
+            git -C "$WS" push -q --force origin {{.GITOPS_BASE}} 2>/dev/null
+          fi
+          return 0
+        }
+        trap cleanup EXIT
+
+        # Reuse forwards from `task lab:forward` if already running in another
+        # terminal; otherwise start scoped ones for just this demo.
+        if ! curl -fsS -o /dev/null http://localhost:9090/-/ready 2>/dev/null; then
+          {{.LAB_BIN}}/kubectl -n observability port-forward svc/kube-prometheus-stack-prometheus 9090:9090 >/dev/null 2>&1 &
+          {{.LAB_BIN}}/kubectl -n observability port-forward svc/loki 3100:3100 >/dev/null 2>&1 &
+          {{.LAB_BIN}}/kubectl -n gitea port-forward svc/gitea-http 3000:3000 >/dev/null 2>&1 &
+          {{.LAB_BIN}}/kubectl -n argocd port-forward svc/argocd-server 8080:80 >/dev/null 2>&1 &
+          STARTED_FORWARDS=1
+          for i in $(seq 1 30); do
+            curl -fsS -o /dev/null http://localhost:9090/-/ready 2>/dev/null && break
+            sleep 1
+          done
+        fi
+
+        echo "-> injecting a fault: shop-api's image tag does not exist"
+        cd "$WS"
+        git checkout -q {{.GITOPS_BASE}}
+        git pull -q
+
+        # Self-heal: an interrupted previous run of this script can leave the
+        # fault committed without ever reaching the reset step below. Force
+        # the known-good tag first so BASE_SHA is guaranteed clean regardless
+        # of prior state — otherwise the sed just below is a silent no-op
+        # (already-broken == target-broken) and the following commit fails
+        # under `set -eu` with "nothing to commit".
+        sed -i.bak 's/tag: "1.27-alpine-nonexistent"/tag: "1.27-alpine"/' apps/shop-api/values.yaml
+        rm -f apps/shop-api/values.yaml.bak
+        if ! git diff --quiet; then
+          git commit -q -am "demo: repair a leftover fault from an interrupted previous run"
+          git push -q origin {{.GITOPS_BASE}}
+        fi
+
+        BASE_SHA=$(git rev-parse HEAD)
+        sed -i.bak 's/tag: "1.27-alpine"/tag: "1.27-alpine-nonexistent"/' apps/shop-api/values.yaml
+        rm -f apps/shop-api/values.yaml.bak
+        git commit -q -am "demo: inject bad-image-tag"
+        git push -q origin {{.GITOPS_BASE}}
+
+        echo "-> waiting for Argo to sync and the fault to reach the cluster..."
+        for i in $(seq 1 30); do
+          reason=$({{.LAB_BIN}}/kubectl -n shop get pods -l app.kubernetes.io/name=shop-api \
+            -o jsonpath='{range .items[*]}{.status.containerStatuses[?(@.name=="shop-api")].state.waiting.reason}{"\n"}{end}' 2>/dev/null \
+            | grep -m1 ImagePullBackOff || true)
+          [ -n "$reason" ] && break
+          sleep 2
+        done
+
+        echo "-> running kubemend (calls the Anthropic API — costs a small amount, a few cents on the cheap model)"
+        echo ""
+        cd {{.ROOT_DIR}}
+        # Re-clear the macOS UF_HIDDEN flag right before use rather than trust
+        # `sync`'s fix:pth from minutes ago: something in the gap between
+        # (deps completing) and (this line, after ~60s of git/Argo-sync
+        # polling) reliably re-hides the .pth on this machine, and a
+        # ModuleNotFoundError this late in the script is a wasted API-key
+        # check and a wasted fault injection for whoever hits it.
+        find {{.ROOT_DIR}}/.venv/lib -name '*.pth' -exec chflags nohidden {} + 2>/dev/null || true
+        RUN_OUTPUT=$({{.ROOT_DIR}}/.venv/bin/kubemend run \
+          --task "shop-api pods are stuck and a rollout never finished" \
+          --namespace shop --app shop-api {{.CLI_ARGS}} | tee /dev/stderr)
+
+        # The workspace can hold many kubemend/<run_id> branches from earlier
+        # runs; `git branch --list | tail -1` picked whichever sorted last,
+        # not this run's — parse the run_id straight from the CLI's own
+        # printed trace path instead, which is unambiguous.
+        run_id=$(echo "$RUN_OUTPUT" | grep -o 'traces/[a-z0-9]*\.jsonl' | sed 's#traces/##; s#\.jsonl##')
+        branch="kubemend/${run_id:-unknown}"
+        echo ""
+        echo "== done. proposal branch: $branch in $WS =="
+        echo "   see PROPOSAL.md on that branch for the rationale and check table."
+        echo "   (the injected fault resets automatically as this script exits)"
+
   doctor:
     desc: Check that the container runtime and pinned binaries are usable
     cmds:
