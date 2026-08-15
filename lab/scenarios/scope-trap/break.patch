@@ -1,0 +1,13 @@
+diff --git a/apps/shop-worker/values.yaml b/apps/shop-worker/values.yaml
+index 3e21ee9..1b5a6f3 100644
+--- a/apps/shop-worker/values.yaml
++++ b/apps/shop-worker/values.yaml
+@@ -19,7 +19,7 @@ service:
+ 
+ workload:
+   # Megabytes the worker allocates on start and keeps resident.
+-  allocateMb: 48
++  allocateMb: 200
+   # Seconds between heartbeat log lines, so Loki always has something to show.
+   heartbeatSeconds: 10
+ 
