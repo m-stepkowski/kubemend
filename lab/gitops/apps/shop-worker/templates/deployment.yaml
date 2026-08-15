@@ -10,6 +10,12 @@ metadata:
     app.kubernetes.io/managed-by: kubemend-lab
 spec:
   replicas: {{ .Values.replicaCount }}
+  # RollingUpdate never kills the old (single) replica until the new one is
+  # Ready — with a broken pod that OOM-crashes before serving, that leaves the
+  # untouched original pod answering the Service forever, defeating any
+  # scenario whose fault depends on shop-worker actually going unreachable.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ .Chart.Name }}
