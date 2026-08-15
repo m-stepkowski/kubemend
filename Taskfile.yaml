@@ -107,6 +107,16 @@ tasks:
       - uv run ruff check .
       - uv run ruff format --check .
       - uv run mypy
+      # Scenario checkers live outside [tool.mypy] files: hyphenated directory
+      # names (bad-image-tag) cannot form a dotted package, so every
+      # checker.py collides as module "checker" if type-checked together.
+      # One file per invocation sidesteps the collision; --config-file keeps
+      # `strict = true` and the other project settings in effect.
+      - |
+        set -eu
+        find {{.ROOT_DIR}}/lab/scenarios -name checker.py | while read -r f; do
+          uv run mypy --config-file {{.ROOT_DIR}}/pyproject.toml "$f"
+        done
 
   fmt:
     desc: Apply ruff formatting and safe autofixes

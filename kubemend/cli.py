@@ -140,6 +140,9 @@ def build_write_path(
         argocd_server=cfg.argocd.server,
         argocd_token=(argocd_token_file.read_text().strip() if argocd_token_file.is_file() else ""),
         argocd_plaintext=cfg.argocd.plaintext,
+        # Same read-only identity the agent's own get_k8s_state tool uses —
+        # the quota check only lists/gets, so it needs nothing more.
+        kube=KubeApiClient(cfg.kubernetes.kubeconfig, context=cfg.kubernetes.context or None),
     )
     return proposer, PipelineGate(proposer=proposer, validator=validator)
 

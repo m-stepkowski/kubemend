@@ -22,7 +22,7 @@ from typing import Annotated
 
 import typer
 
-from evals.lab import KubeQuery, LabHandle, LogSearch, SymptomTimeout
+from evals.lab import KubeQuery, Lab, LabHandle, LogSearch, SymptomTimeout
 from evals.models import CheckReport, ScenarioSpec
 from evals.scenario import SCENARIOS_ROOT, CheckerFn, list_scenarios, load_scenario
 from kubemend.config import RunConfig, load_config
@@ -73,7 +73,7 @@ def run_sweep(
     cfg: RunConfig,
     *,
     llm: LLMClient,
-    lab: LabHandle,
+    lab: Lab,
     lab_bin: Path = Path(".lab/bin"),
     trace_dir: Path = Path("traces"),
     scenarios_root: Path = SCENARIOS_ROOT,
@@ -118,7 +118,7 @@ def _run_one(
     cfg: RunConfig,
     *,
     llm: LLMClient,
-    lab: LabHandle,
+    lab: Lab,
     lab_bin: Path,
     trace_dir: Path,
     scenarios_root: Path,
