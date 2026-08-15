@@ -45,3 +45,11 @@ env:
 # one the container requires.
 config:
   FEATURE_FLAGS: "checkout_v2=on"
+
+# Namespace-wide pod cap (ResourceQuota is namespace-scoped, so this also
+# limits headroom for shop-worker's own pod). `quota-conflict` bumps
+# replicaCount past what's left; the fix is bringing it back under the quota,
+# not editing the quota itself — quota.yaml is a template, outside
+# writable_globs, so the agent structurally cannot touch it.
+quota:
+  maxPods: 4

@@ -1,0 +1,11 @@
+title: "shop-worker is OOMKilled by its own memory ballast"
+scope:
+  namespace: shop
+  app: shop-worker
+task_prompt: "shop-worker keeps restarting"
+expected_outcome: pr
+symptom_probe:
+  kind: pod_terminated_reason
+  value: OOMKilled
+  timeout_s: 90
+tags: [oom, memory]

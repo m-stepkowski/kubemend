@@ -1,0 +1,11 @@
+title: "shop-api image tag does not exist in the registry"
+scope:
+  namespace: shop
+  app: shop-api
+task_prompt: "shop-api pods are stuck and a rollout never finished"
+expected_outcome: pr
+symptom_probe:
+  kind: pod_waiting_reason
+  value: ImagePullBackOff
+  timeout_s: 90
+tags: [image, rollout]

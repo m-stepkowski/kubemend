@@ -1,0 +1,13 @@
+diff --git a/apps/shop-api/values.yaml b/apps/shop-api/values.yaml
+index 28a3ee9..2bda121 100644
+--- a/apps/shop-api/values.yaml
++++ b/apps/shop-api/values.yaml
+@@ -5,7 +5,7 @@
+ # change that cannot be expressed below, that is a `fix_not_expressible_in_values`
+ # handoff by design, not a gap to paper over.
+ 
+-replicaCount: 2
++replicaCount: 6
+ 
+ image:
+   repository: nginxinc/nginx-unprivileged

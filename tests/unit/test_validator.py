@@ -191,7 +191,13 @@ def test_all_stages_passing_yields_a_passed_verdict_with_a_diff_summary(tmp_path
     verdict = _validator(runner, tmp_path).validate(["shop-api"])
 
     assert verdict.passed is True
-    assert [c.name for c in verdict.checks] == ["helm_template", "kyverno", "diff", "scope"]
+    assert [c.name for c in verdict.checks] == [
+        "helm_template",
+        "kyverno",
+        "diff",
+        "scope",
+        "quota",
+    ]
     assert verdict.diff_summary is not None
     assert verdict.diff_summary.resources == [("Deployment", "shop", "shop-api")]
 
@@ -383,3 +389,235 @@ def test_without_a_token_the_kubectl_fallback_is_used(tmp_path: Path) -> None:
 
     assert verdict.passed is True
     assert any(c[0] == "/pinned/kubectl" for c in runner.calls)
+
+
+# -- quota headroom stage --------------------------------------------------
+# render/policy/diff/scope can all pass on a replica count the live
+# ResourceQuota would refuse; a live sweep caught exactly that gap (M4).
+
+
+def _rendered_deployment(namespace: str = "shop", name: str = "shop-api", replicas: int = 3) -> str:
+    return f"""\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {name}
+  namespace: {namespace}
+spec:
+  replicas: {replicas}
+"""
+
+
+class FakeKube:
+    """A KubeQuery double: canned resourcequotas plus a live replica count."""
+
+    def __init__(
+        self,
+        quotas: list[dict[str, object]] | None = None,
+        live_replicas: int | None = 2,
+        live_spec_replicas: int | None = None,
+    ) -> None:
+        self.quotas = quotas or []
+        self.live_replicas = live_replicas
+        # Only set for the spec-vs-status regression test: a Deployment whose
+        # *desired* count (spec.replicas) differs from what it actually owns
+        # (status.replicas) — the exact shape of the broken state this stage
+        # exists to diagnose.
+        self.live_spec_replicas = live_spec_replicas
+        self.list_resource_calls: list[tuple[str, str]] = []
+        self.get_resource_calls: list[tuple[str, str, str]] = []
+
+    def list_resource(
+        self, kind: str, namespace: str, selector: str | None = None
+    ) -> list[dict[str, object]]:
+        self.list_resource_calls.append((kind, namespace))
+        return self.quotas if kind == "resourcequota" else []
+
+    def get_resource(self, kind: str, namespace: str, name: str) -> dict[str, object]:
+        self.get_resource_calls.append((kind, namespace, name))
+        if self.live_replicas is None:
+            from kubemend.tools.base import ClientError
+
+            raise ClientError(f"{kind}/{name} not found in namespace {namespace}")
+        live: dict[str, object] = {"status": {"replicas": self.live_replicas}}
+        if self.live_spec_replicas is not None:
+            live["spec"] = {"replicas": self.live_spec_replicas}
+        return live
+
+
+def _quota_object(
+    name: str = "shop-api-pods", hard_pods: int = 4, used_pods: int = 3
+) -> dict[str, object]:
+    return {
+        "metadata": {"name": name},
+        "spec": {"hard": {"pods": str(hard_pods)}},
+        "status": {"used": {"pods": str(used_pods)}},
+    }
+
+
+def _quota_validator(runner: ScriptedRunner, tmp_path: Path, kube: FakeKube | None) -> Validator:
+    return Validator(
+        repo_path=tmp_path,
+        scope=SCOPE,
+        helm_bin=Path("/pinned/helm"),
+        kyverno_bin=Path("/pinned/kyverno"),
+        kubectl_bin=Path("/pinned/kubectl"),
+        policies_dir=Path("/repo/policies"),
+        kube=kube,
+        runner=runner,
+    )
+
+
+def test_quota_check_is_skipped_when_no_kube_client_is_wired_in(tmp_path: Path) -> None:
+    """Existing fixtures that never touch quota semantics need no dummy client."""
+    runner = ScriptedRunner(
+        helm=CommandResult(0, stdout=_rendered_deployment(replicas=99)),
+        kyverno=CommandResult(0, stdout="pass: 6, fail: 0, warn: 0, error: 0, skip: 0\n"),
+        kubectl=CommandResult(1, stdout=KUBECTL_DIFF),
+    )
+
+    verdict = _quota_validator(runner, tmp_path, kube=None).validate(["shop-api"])
+
+    assert verdict.passed is True
+    quota = next(c for c in verdict.checks if c.name == "quota")
+    assert quota.passed is True
+
+
+def test_quota_check_passes_when_the_proposal_fits(tmp_path: Path) -> None:
+    kube = FakeKube(quotas=[_quota_object(hard_pods=4, used_pods=3)], live_replicas=2)
+    runner = ScriptedRunner(
+        helm=CommandResult(0, stdout=_rendered_deployment(replicas=3)),
+        kyverno=CommandResult(0, stdout="pass: 6, fail: 0, warn: 0, error: 0, skip: 0\n"),
+        kubectl=CommandResult(1, stdout=KUBECTL_DIFF),
+    )
+
+    verdict = _quota_validator(runner, tmp_path, kube=kube).validate(["shop-api"])
+
+    # other usage = used(3) - live(2) = 1; projected = 1 + proposed(3) = 4 <= hard(4)
+    assert verdict.passed is True
+    quota = next(c for c in verdict.checks if c.name == "quota")
+    assert quota.passed is True
+
+
+def test_quota_check_fails_when_the_proposal_would_exceed_live_headroom(tmp_path: Path) -> None:
+    """The exact case a live sweep caught: render/policy/diff/scope all pass,
+    but the replica count the model chose does not actually fit."""
+    kube = FakeKube(quotas=[_quota_object(hard_pods=4, used_pods=3)], live_replicas=2)
+    runner = ScriptedRunner(
+        helm=CommandResult(0, stdout=_rendered_deployment(replicas=4)),
+        kyverno=CommandResult(0, stdout="pass: 6, fail: 0, warn: 0, error: 0, skip: 0\n"),
+        kubectl=CommandResult(1, stdout=KUBECTL_DIFF),
+    )
+
+    verdict = _quota_validator(runner, tmp_path, kube=kube).validate(["shop-api"])
+
+    # other usage = used(3) - live(2) = 1; projected = 1 + proposed(4) = 5 > hard(4)
+    assert verdict.passed is False
+    quota = next(c for c in verdict.checks if c.name == "quota")
+    assert quota.passed is False
+    assert "shop-api-pods" in quota.detail
+    assert "5" in quota.detail and "4" in quota.detail
+
+
+def test_quota_check_accounts_for_other_workloads_sharing_the_quota(tmp_path: Path) -> None:
+    """A namespace can hold more than one app against a shared quota — the
+    check must not assume the quota belongs solely to the app being fixed."""
+    # used=3 total in the namespace; shop-api itself only owns 1 of those live,
+    # so some other workload already holds 2.
+    kube = FakeKube(quotas=[_quota_object(hard_pods=4, used_pods=3)], live_replicas=1)
+    runner = ScriptedRunner(
+        helm=CommandResult(0, stdout=_rendered_deployment(replicas=2)),
+        kyverno=CommandResult(0, stdout="pass: 6, fail: 0, warn: 0, error: 0, skip: 0\n"),
+        kubectl=CommandResult(1, stdout=KUBECTL_DIFF),
+    )
+
+    verdict = _quota_validator(runner, tmp_path, kube=kube).validate(["shop-api"])
+
+    # other usage = used(3) - live(1) = 2; projected = 2 + proposed(2) = 4 <= hard(4)
+    assert verdict.passed is True
+
+
+def test_quota_check_ignores_a_quota_with_no_pods_key(tmp_path: Path) -> None:
+    kube = FakeKube(
+        quotas=[{"metadata": {"name": "cpu-only"}, "spec": {"hard": {"requests.cpu": "2"}}}],
+    )
+    runner = ScriptedRunner(
+        helm=CommandResult(0, stdout=_rendered_deployment(replicas=99)),
+        kyverno=CommandResult(0, stdout="pass: 6, fail: 0, warn: 0, error: 0, skip: 0\n"),
+        kubectl=CommandResult(1, stdout=KUBECTL_DIFF),
+    )
+
+    verdict = _quota_validator(runner, tmp_path, kube=kube).validate(["shop-api"])
+
+    assert verdict.passed is True
+
+
+def test_quota_check_passes_when_the_namespace_has_no_resourcequota(tmp_path: Path) -> None:
+    kube = FakeKube(quotas=[])
+    runner = ScriptedRunner(
+        helm=CommandResult(0, stdout=_rendered_deployment(replicas=99)),
+        kyverno=CommandResult(0, stdout="pass: 6, fail: 0, warn: 0, error: 0, skip: 0\n"),
+        kubectl=CommandResult(1, stdout=KUBECTL_DIFF),
+    )
+
+    verdict = _quota_validator(runner, tmp_path, kube=kube).validate(["shop-api"])
+
+    assert verdict.passed is True
+
+
+def test_quota_check_treats_a_never_live_resource_as_owning_zero_pods(tmp_path: Path) -> None:
+    """First-ever proposal for an app that does not exist live yet: nothing of
+    its own to subtract from the quota's current usage."""
+    kube = FakeKube(quotas=[_quota_object(hard_pods=4, used_pods=1)], live_replicas=None)
+    runner = ScriptedRunner(
+        helm=CommandResult(0, stdout=_rendered_deployment(replicas=3)),
+        kyverno=CommandResult(0, stdout="pass: 6, fail: 0, warn: 0, error: 0, skip: 0\n"),
+        kubectl=CommandResult(1, stdout=KUBECTL_DIFF),
+    )
+
+    verdict = _quota_validator(runner, tmp_path, kube=kube).validate(["shop-api"])
+
+    # other usage = used(1) - 0 = 1; projected = 1 + proposed(3) = 4 <= hard(4)
+    assert verdict.passed is True
+
+
+def test_quota_check_uses_live_status_not_desired_spec(tmp_path: Path) -> None:
+    """The exact bug a live regression sweep caught: a broken Deployment's
+    spec.replicas is still the unfulfillable desired count (6, over quota),
+    while status.replicas (3) is what the quota's `used` figure actually
+    counts. Reading spec here inverts the math into a negative "other usage"
+    and lets an over-quota proposal look like it fits."""
+    kube = FakeKube(
+        quotas=[_quota_object(hard_pods=4, used_pods=4)],
+        live_replicas=3,  # status.replicas: what actually exists
+        live_spec_replicas=6,  # spec.replicas: the still-broken desired count
+    )
+    runner = ScriptedRunner(
+        helm=CommandResult(0, stdout=_rendered_deployment(replicas=4)),
+        kyverno=CommandResult(0, stdout="pass: 6, fail: 0, warn: 0, error: 0, skip: 0\n"),
+        kubectl=CommandResult(1, stdout=KUBECTL_DIFF),
+    )
+
+    verdict = _quota_validator(runner, tmp_path, kube=kube).validate(["shop-api"])
+
+    # other usage = used(4) - status.replicas(3) = 1; projected = 1 + 4 = 5 > hard(4)
+    assert verdict.passed is False
+    quota = next(c for c in verdict.checks if c.name == "quota")
+    assert quota.passed is False
+
+
+def test_quota_check_never_runs_when_scope_already_failed(tmp_path: Path) -> None:
+    """Short-circuit is preserved: an out-of-scope diff must not spend a live
+    quota lookup on a proposal that already fails for an unrelated reason."""
+    kube = FakeKube(quotas=[_quota_object()])
+    runner = ScriptedRunner(
+        helm=CommandResult(0, stdout=_rendered_deployment(replicas=3)),
+        kyverno=CommandResult(0, stdout="pass: 6, fail: 0, warn: 0, error: 0, skip: 0\n"),
+        kubectl=CommandResult(1, stdout=KUBECTL_DIFF_OUT_OF_SCOPE),
+    )
+
+    verdict = _quota_validator(runner, tmp_path, kube=kube).validate(["shop-api"])
+
+    assert verdict.passed is False
+    assert not any(c.name == "quota" for c in verdict.checks)
+    assert kube.list_resource_calls == []

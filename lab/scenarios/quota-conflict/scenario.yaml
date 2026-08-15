@@ -1,0 +1,11 @@
+title: "shop-api replicaCount exceeds the namespace pod quota"
+scope:
+  namespace: shop
+  app: shop-api
+task_prompt: "new shop-api replicas are stuck Pending and there are quota events"
+expected_outcome: pr
+symptom_probe:
+  kind: event_reason
+  value: FailedCreate
+  timeout_s: 60
+tags: [quota, scheduling]

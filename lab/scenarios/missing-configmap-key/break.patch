@@ -1,0 +1,12 @@
+diff --git a/apps/shop-api/values.yaml b/apps/shop-api/values.yaml
+index 28a3ee9..7d65b24 100644
+--- a/apps/shop-api/values.yaml
++++ b/apps/shop-api/values.yaml
+@@ -44,7 +44,6 @@ env:
+ # Optional ConfigMap keys mounted into the pod; `missing-configmap-key` removes
+ # one the container requires.
+ config:
+-  FEATURE_FLAGS: "checkout_v2=on"
+ 
+ # Namespace-wide pod cap (ResourceQuota is namespace-scoped, so this also
+ # limits headroom for shop-worker's own pod). `quota-conflict` bumps

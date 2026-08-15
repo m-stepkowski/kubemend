@@ -15,7 +15,8 @@ from kubemend.core.model import CheckResult, Task, Verdict
 from kubemend.llm.fake import FakeLLM, handoff_turn, text_turn, tool_turn
 from kubemend.tools.base import ToolSpec
 from kubemend.tools.registry import ToolRegistry
-from kubemend.trace.recorder import TraceRecorder, replay
+from kubemend.trace.recorder import TraceRecorder
+from kubemend.trace.replay import replay
 
 from .conftest import StubGate, counting_tool
 

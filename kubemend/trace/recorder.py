@@ -146,15 +146,6 @@ class TraceRecorder:
                 "pr_ref": result.pr_ref,
                 "cost_usd": result.cost_usd,
                 "iterations": result.iterations,
+                "wall_seconds": result.wall_seconds,
             }
         )
-
-
-def replay(path: Path | str) -> list[Event]:
-    """Reconstruct the event sequence a run recorded."""
-    source = Path(path)
-    if not source.exists():
-        return []
-    return [
-        json.loads(line) for line in source.read_text(encoding="utf-8").splitlines() if line.strip()
-    ]

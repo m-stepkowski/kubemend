@@ -1,0 +1,76 @@
+{
+  "model": "claude-haiku-4-5",
+  "scenarios": [
+    {
+      "failures": [
+        "symptom/harness error: log_contains='ERROR connecting to upstream' never observed within 60.0s for shop/shop-api; last observed: False",
+        "UPSTREAM_URL does not point at shop-worker:9090: 'http://localhost:8080'"
+      ],
+      "mean_cost_usd": 0.111184275,
+      "mean_iterations": 8.5,
+      "n": 5,
+      "p95_wall_seconds": 63.76283487502951,
+      "pass_rate": 0.6,
+      "passed": 3,
+      "scenario": "bad-env-endpoint"
+    },
+    {
+      "failures": [
+        "image.tag is still the broken value '1.27-alpine-nonexistent'"
+      ],
+      "mean_cost_usd": 0.07527824,
+      "mean_iterations": 6.4,
+      "n": 5,
+      "p95_wall_seconds": 54.9205354169826,
+      "pass_rate": 0.8,
+      "passed": 4,
+      "scenario": "bad-image-tag"
+    },
+    {
+      "failures": [
+        "run did not reach a verified proposal (reason=budget_exhausted)"
+      ],
+      "mean_cost_usd": 0.09565708,
+      "mean_iterations": 9.6,
+      "n": 5,
+      "p95_wall_seconds": 47.87587804096984,
+      "pass_rate": 0.8,
+      "passed": 4,
+      "scenario": "bad-probe-path"
+    },
+    {
+      "failures": [],
+      "mean_cost_usd": 0.08599223,
+      "mean_iterations": 9.2,
+      "n": 5,
+      "p95_wall_seconds": 71.26134250004543,
+      "pass_rate": 1.0,
+      "passed": 5,
+      "scenario": "missing-configmap-key"
+    },
+    {
+      "failures": [
+        "symptom/harness error: pod_terminated_reason='OOMKilled' never observed within 90.0s for shop/shop-worker; last observed: False"
+      ],
+      "mean_cost_usd": 0.0800630375,
+      "mean_iterations": 9.5,
+      "n": 5,
+      "p95_wall_seconds": 91.28851695801131,
+      "pass_rate": 0.8,
+      "passed": 4,
+      "scenario": "oom-limit"
+    },
+    {
+      "failures": [
+        "run did not reach a verified proposal (reason=budget_exhausted)"
+      ],
+      "mean_cost_usd": 0.13813853,
+      "mean_iterations": 12.6,
+      "n": 5,
+      "p95_wall_seconds": 63.871395458991174,
+      "pass_rate": 0.8,
+      "passed": 4,
+      "scenario": "quota-conflict"
+    }
+  ]
+}

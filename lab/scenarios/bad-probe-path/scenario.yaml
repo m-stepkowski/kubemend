@@ -1,0 +1,12 @@
+title: "shop-api readiness probe points at a path that 404s"
+scope:
+  namespace: shop
+  app: shop-api
+task_prompt: "shop-api pods are running but never become ready"
+expected_outcome: pr
+symptom_probe:
+  kind: pod_condition
+  condition_type: Ready
+  value: "False"
+  timeout_s: 60
+tags: [probes, readiness]

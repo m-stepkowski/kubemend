@@ -116,8 +116,10 @@ Executor: enforce `writable_globs` per path (any violation ⇒ `path_not_writabl
 
 ```json
 {"name": "validate_change",
- "description": "Validate the current proposal branch: helm render, Kyverno policy check, live diff, and scope check. Returns per-check pass/fail with details. Use this to self-check before declaring the task done; the harness will re-run it independently anyway.",
+ "description": "Validate the current proposal branch: helm render, Kyverno policy check, live diff, scope check, and live quota headroom. Returns per-check pass/fail with details. Use this to self-check before declaring the task done; the harness will re-run it independently anyway.",
  "input_schema": {"type": "object", "properties": {}, "required": []}}
 ```
 
 Executor: runs the §5 pipeline on the run's active branch; no branch ⇒ `{"error":{"type":"no_active_proposal"}}`. Payload mirrors `Verdict`: `{passed, checks: [{name, passed, detail}], diff_summary}`. The scope-check implementation details are never surfaced to the model beyond pass/fail + offending resource — the model should satisfy scope, not learn to game the checker.
+
+**Quota stage (added after a live sweep caught the gap):** render/policy/diff/scope all pass on a Deployment whose replica count the live `ResourceQuota` would refuse — the diff is real, in-scope, and policy-clean, yet the resulting pods would sit Pending forever. This stage renders each proposed Deployment/StatefulSet's replica count against the namespace's live `ResourceQuota.status.used.pods`, subtracting the resource's own current live contribution first (a namespace can hold more than one workload against a shared quota — the check does not assume the quota belongs solely to the app being fixed). Only `pods` today; `requests.cpu`/`requests.memory` would need the same shape. Read-only (`list_resource`/`get_resource`, the same surface `get_k8s_state` uses) — no new privilege beyond what the read-only ServiceAccount already holds. Skipped (passes) when no kube client is wired into the `Validator`.

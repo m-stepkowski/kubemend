@@ -107,6 +107,16 @@ tasks:
       - uv run ruff check .
       - uv run ruff format --check .
       - uv run mypy
+      # Scenario checkers live outside [tool.mypy] files: hyphenated directory
+      # names (bad-image-tag) cannot form a dotted package, so every
+      # checker.py collides as module "checker" if type-checked together.
+      # One file per invocation sidesteps the collision; --config-file keeps
+      # `strict = true` and the other project settings in effect.
+      - |
+        set -eu
+        find {{.ROOT_DIR}}/lab/scenarios -name checker.py | while read -r f; do
+          uv run mypy --config-file {{.ROOT_DIR}}/pyproject.toml "$f"
+        done
 
   fmt:
     desc: Apply ruff formatting and safe autofixes
@@ -116,8 +126,10 @@ tasks:
 
   evals:
     desc: "Run an eval sweep, e.g. task evals -- -s bad-image-tag -n 1 --model cheap"
+    # sync + direct binary, not `uv run`: same macOS .pth trap as `task run`.
+    deps: [sync]
     cmds:
-      - uv run kubemend evals {{.CLI_ARGS}}
+      - '{{.ROOT_DIR}}/.venv/bin/kubemend evals run {{.CLI_ARGS}}'
 
   # -- pinned tool binaries ------------------------------------------------
 

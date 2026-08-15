@@ -95,6 +95,7 @@ def run(
                 verdict=verdict,
                 cost_usd=budget.cost_usd,
                 iterations=budget.iterations,
+                wall_seconds=budget.elapsed_seconds,
                 trace_path=trace.path,
             )
             trace.result(result)
@@ -128,6 +129,7 @@ def _handoff(
         handoff=report,
         cost_usd=budget.cost_usd,
         iterations=budget.iterations,
+        wall_seconds=budget.elapsed_seconds,
         trace_path=trace.path,
     )
     trace.result(result)

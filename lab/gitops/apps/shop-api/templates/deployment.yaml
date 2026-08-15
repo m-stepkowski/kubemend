@@ -17,6 +17,16 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: {{ .Chart.Name }}
+      annotations:
+        # A required env var is wired via configMapKeyRef, resolved at
+        # container start — Kubernetes does not restart a running pod when
+        # the ConfigMap it references changes. Without this, removing
+        # FEATURE_FLAGS (missing-configmap-key) is a no-op against pods that
+        # started before the break: nothing ever asks them to restart, so the
+        # fault never manifests. The standard Helm fix: hash the ConfigMap's
+        # rendered content into a pod annotation, so any change to it changes
+        # the pod template and forces a real rollout.
+        checksum/config: {{ include (print $.Template.BasePath "/service.yaml") . | sha256sum }}
     spec:
       securityContext:
         runAsNonRoot: true
@@ -35,9 +45,17 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
-          envFrom:
-            - configMapRef:
-                name: {{ .Chart.Name }}-config
+            # A specific required key, not envFrom: envFrom silently omits
+            # whatever keys the ConfigMap happens not to have, so a missing key
+            # produces no observable failure. configMapKeyRef is optional:false
+            # by default, so a missing FEATURE_FLAGS key is what makes
+            # `missing-configmap-key` a real, observable CreateContainerConfigError
+            # rather than an aspirational scenario.
+            - name: FEATURE_FLAGS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Chart.Name }}-config
+                  key: FEATURE_FLAGS
           readinessProbe:
             httpGet:
               path: {{ .Values.probes.readiness.path }}
@@ -52,6 +70,32 @@ spec:
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+        # A sidecar rather than logic in the main container: shop-api (real
+        # nginx) never itself calls UPSTREAM_URL, so `bad-env-endpoint` needs
+        # something that does, to produce the connection-error log line the
+        # scenario is named for. Deliberately does not affect the pod's own
+        # readiness/liveness — the fault is "logs show a downstream problem",
+        # not "shop-api itself is unhealthy", which is what makes this
+        # scenario distinct from bad-probe-path.
+        - name: upstream-check
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              while true; do
+                if ! wget -T 2 -q -O /dev/null "{{ .Values.env.UPSTREAM_URL }}"; then
+                  echo "ERROR connecting to upstream {{ .Values.env.UPSTREAM_URL }}: connection failed"
+                fi
+                sleep 5
+              done
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 32Mi}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false

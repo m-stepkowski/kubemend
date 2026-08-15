@@ -1,0 +1,13 @@
+diff --git a/apps/shop-api/values.yaml b/apps/shop-api/values.yaml
+index 28a3ee9..704dd12 100644
+--- a/apps/shop-api/values.yaml
++++ b/apps/shop-api/values.yaml
+@@ -39,7 +39,7 @@ resources:
+ # UPSTREAM_URL at something unreachable so the logs fill with connection errors.
+ env:
+   LOG_LEVEL: info
+-  UPSTREAM_URL: http://shop-worker.shop.svc.cluster.local:9090
++  UPSTREAM_URL: http://shop-worker.shop.svc.cluster.local:9999
+ 
+ # Optional ConfigMap keys mounted into the pod; `missing-configmap-key` removes
+ # one the container requires.

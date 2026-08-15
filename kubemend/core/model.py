@@ -120,4 +120,5 @@ class RunResult:
     pr_ref: str | None = None
     cost_usd: float = 0.0
     iterations: int = 0
+    wall_seconds: float = 0.0
     trace_path: Path | None = None

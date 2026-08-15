@@ -1,0 +1,13 @@
+diff --git a/apps/shop-api/values.yaml b/apps/shop-api/values.yaml
+index 28a3ee9..06daf74 100644
+--- a/apps/shop-api/values.yaml
++++ b/apps/shop-api/values.yaml
+@@ -20,7 +20,7 @@ service:
+ # Probe paths are values so `bad-probe-path` can point them at a 404.
+ probes:
+   readiness:
+-    path: /
++    path: /healthz-does-not-exist
+     initialDelaySeconds: 3
+     periodSeconds: 5
+   liveness:
