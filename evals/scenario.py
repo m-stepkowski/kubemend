@@ -13,13 +13,13 @@ from pathlib import Path
 
 import yaml
 
-from evals.lab import LabHandle
+from evals.lab import Lab
 from evals.models import CheckReport, ScenarioSpec, SymptomProbe
 from kubemend.core.model import RunResult, Scope
 
 SCENARIOS_ROOT = Path("lab/scenarios")
 
-CheckerFn = Callable[[RunResult, LabHandle], CheckReport]
+CheckerFn = Callable[[RunResult, Lab], CheckReport]
 
 
 def load_scenario(name: str, root: Path = SCENARIOS_ROOT) -> tuple[ScenarioSpec, CheckerFn]:

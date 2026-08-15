@@ -48,6 +48,22 @@ class LogSearch(Protocol):
     def search_logs(self, query: LogQuery) -> LogResult: ...
 
 
+class Lab(Protocol):
+    """What the runner and every checker need from a lab, structurally.
+
+    `LabHandle` below is the real implementation; this Protocol is the seam
+    that lets `run_sweep` and scenario checkers be tested against a fake
+    without touching git or a cluster.
+    """
+
+    def snapshot(self) -> None: ...
+    def reset(self) -> None: ...
+    def apply_break(self, patch_path: Path, message: str) -> None: ...
+    def wait_for_symptom(self, probe: SymptomProbe, scope: Scope) -> None: ...
+    def render(self, app: str, namespace: str) -> str: ...
+    def read_file(self, rel_path: str) -> str: ...
+
+
 class LabHandle:
     def __init__(
         self,
@@ -108,11 +124,16 @@ class LabHandle:
         what gitea has, and the symptom has to manifest in the real cluster
         before the agent is asked to diagnose it.
         """
+        # git apply runs with cwd set to the workspace (this repo), not the
+        # caller's — a relative patch path (the loader's default is relative
+        # to the main kubemend checkout) resolves against the wrong directory
+        # and fails with "No such file or directory".
+        absolute_patch = Path(patch_path).resolve()
         repo = self._repo()
         try:
-            repo.git.apply(str(patch_path))
+            repo.git.apply(str(absolute_patch))
         except GitCommandError as exc:
-            raise RuntimeError(f"{patch_path} did not apply: {exc}") from exc
+            raise RuntimeError(f"{absolute_patch} did not apply: {exc}") from exc
         repo.git.add(A=True)
         repo.index.commit(message)
         repo.git.push(self.remote, self.base_branch)
@@ -154,17 +175,35 @@ class LabHandle:
     def _container_state_reason(
         self, scope: Scope, selector: str, state: str, want: str
     ) -> bool | str:
+        """Check both `state` and `lastState` for the requested reason.
+
+        A terminated container (OOMKilled, Error, ...) restarts automatically
+        under the Deployment's default restart policy, and Kubernetes moves
+        the evidence into lastState the moment it does — often faster than
+        one poll interval. Checking only `state` misses every OOM that has
+        already bounced back to Running by the time the probe looks.
+
+        A container killed for memory *before* its own process starts is
+        reported as `StartError` with an "OOM-killed" message, not as
+        `OOMKilled` — observed live in this lab's containerd when a container
+        overshoots its limit enough that even runc's own init step cannot
+        fit. Both are genuinely memory exhaustion, so a probe looking for
+        OOMKilled also accepts that message text.
+        """
         pods = self.kube.list_resource("pod", scope.namespace, selector=selector)
         reasons = []
         for pod in pods:
             statuses = pod.get("status", {}).get("containerStatuses") or []
             for status in statuses:
-                info = status.get("state", {}).get(state)
-                if info:
-                    reason = str(info.get("reason", ""))
-                    reasons.append(reason)
-                    if reason == want:
-                        return True
+                for slot in ("state", "lastState"):
+                    info = status.get(slot, {}).get(state)
+                    if info:
+                        reason = str(info.get("reason", ""))
+                        reasons.append(reason)
+                        if reason == want:
+                            return True
+                        if want == "OOMKilled" and "OOM" in str(info.get("message", "")).upper():
+                            return True
         return f"{state} reasons seen: {reasons}" if reasons else False
 
     def _pod_condition(
@@ -183,18 +222,26 @@ class LabHandle:
         return f"{condition_type} statuses seen: {observed}" if observed else False
 
     def _log_contains(self, scope: Scope, substring: str) -> bool | str:
+        """A server-side LogQL line filter, not a client-side scan.
+
+        A pod can carry a noisy primary container (nginx's access log on every
+        probe hit) alongside the sparse sidecar output a scenario actually
+        cares about. Fetching the last N lines and scanning client-side lets
+        the noisy stream crowd the sparse one out of the window entirely — the
+        fix is asking Loki to filter before truncating, the same `|=` pattern
+        documented for the agent's own search_logs tool.
+        """
+        escaped = substring.replace("\\", "\\\\").replace('"', '\\"')
         result = self.loki.search_logs(
             LogQuery(
-                query=f'{{namespace="{scope.namespace}", pod=~"{scope.app}-.*"}}',
+                query=f'{{namespace="{scope.namespace}", pod=~"{scope.app}-.*"}} |= "{escaped}"',
                 start="-5m",
                 end="now",
-                limit=200,
+                limit=50,
             )
         )
-        for stream in result.streams:
-            for _, line in stream.lines:
-                if substring in line:
-                    return True
+        if any(stream.lines for stream in result.streams):
+            return True
         return f"{result.total_lines} log line(s) seen, none matching" if result.streams else False
 
     # -- checker support ------------------------------------------------------
