@@ -1,0 +1,231 @@
+"""Lab operations for scenario runs (docs/knowledge/lab-and-evals.md).
+
+Everything a scenario needs that is not the agent itself: resetting the gitops
+repo to a known-good commit, committing the injected fault so Argo syncs it,
+polling the cluster until the symptom has actually manifested (so a run does
+not start diagnosing a state that has not happened yet), and re-rendering a
+proposal branch for a checker's property assertions.
+
+Talks to the live lab. Unit tests exercise the git operations against tmp_path
+repos and the probe dispatch against fake kube/loki clients — nothing here
+needs a real cluster to be tested; a real cluster is only involved when a sweep
+actually runs (`task evals`).
+"""
+
+from __future__ import annotations
+
+import subprocess
+import time
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any, Protocol
+
+from git import GitCommandError, Repo
+
+from evals.models import SymptomProbe
+from kubemend.core.model import Scope
+from kubemend.tools.observability.provider import LogQuery, LogResult
+
+
+class SymptomTimeout(Exception):
+    """The injected fault never produced the state the scenario expects.
+
+    Its own exception rather than a generic timeout: a scenario-authoring bug
+    (wrong probe value, a break.patch that does not actually break anything)
+    must not be indistinguishable from ordinary flakiness in a sweep report.
+    """
+
+
+class KubeQuery(Protocol):
+    def list_resource(
+        self, kind: str, namespace: str, selector: str | None = None
+    ) -> list[dict[str, Any]]: ...
+
+    def list_events(self, namespace: str, involved: str | None = None) -> list[dict[str, Any]]: ...
+
+
+class LogSearch(Protocol):
+    def search_logs(self, query: LogQuery) -> LogResult: ...
+
+
+class LabHandle:
+    def __init__(
+        self,
+        workspace: Path,
+        base_branch: str,
+        kube: KubeQuery,
+        loki: LogSearch,
+        *,
+        remote: str = "origin",
+        helm_bin: Path = Path(".lab/bin/helm"),
+        kube_version: str = "1.31.2",
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.workspace = workspace
+        self.base_branch = base_branch
+        self.kube = kube
+        self.loki = loki
+        self.remote = remote
+        self.helm_bin = helm_bin
+        self.kube_version = kube_version
+        self._clock = clock
+        self._sleep = sleep
+        self._known_good_sha: str | None = None
+
+    def _repo(self) -> Repo:
+        return Repo(self.workspace)
+
+    # -- gitops repo lifecycle --------------------------------------------
+
+    def snapshot(self) -> None:
+        """Record the current base-branch SHA as what reset() returns to.
+
+        Call once before a sweep starts, on a clean checkout of the base
+        branch. Every scenario's reset() comes back to this exact commit, so
+        one scenario's leftovers never leak into the next.
+        """
+        repo = self._repo()
+        repo.git.checkout(self.base_branch)
+        repo.git.pull(self.remote, self.base_branch)
+        self._known_good_sha = repo.head.commit.hexsha
+
+    def reset(self) -> None:
+        if self._known_good_sha is None:
+            raise RuntimeError("snapshot() must run before reset()")
+        repo = self._repo()
+        repo.git.checkout(self.base_branch)
+        repo.git.reset("--hard", self._known_good_sha)
+        try:
+            repo.git.push(self.remote, self.base_branch, "--force")
+        except GitCommandError as exc:
+            raise RuntimeError(f"could not reset {self.base_branch}: {exc}") from exc
+
+    def apply_break(self, patch_path: Path, message: str) -> None:
+        """Apply break.patch as a commit on the base branch and push it.
+
+        A real commit, not a local-only working-tree edit: Argo only syncs
+        what gitea has, and the symptom has to manifest in the real cluster
+        before the agent is asked to diagnose it.
+        """
+        repo = self._repo()
+        try:
+            repo.git.apply(str(patch_path))
+        except GitCommandError as exc:
+            raise RuntimeError(f"{patch_path} did not apply: {exc}") from exc
+        repo.git.add(A=True)
+        repo.index.commit(message)
+        repo.git.push(self.remote, self.base_branch)
+
+    # -- symptom probe ------------------------------------------------------
+
+    def wait_for_symptom(self, probe: SymptomProbe, scope: Scope) -> None:
+        deadline = self._clock() + probe.timeout_s
+        last_observed: str | bool = "no matching pod seen"
+        while self._clock() < deadline:
+            observed = self._probe_once(probe, scope)
+            if observed is True:
+                return
+            last_observed = observed
+            self._sleep(probe.poll_interval_s)
+        raise SymptomTimeout(
+            f"{probe.kind}={probe.value!r} never observed within {probe.timeout_s}s "
+            f"for {scope.namespace}/{scope.app}; last observed: {last_observed}"
+        )
+
+    def _probe_once(self, probe: SymptomProbe, scope: Scope) -> bool | str:
+        selector = f"app.kubernetes.io/name={scope.app}"
+        if probe.kind == "pod_waiting_reason":
+            return self._container_state_reason(scope, selector, "waiting", probe.value)
+        if probe.kind == "pod_terminated_reason":
+            return self._container_state_reason(scope, selector, "terminated", probe.value)
+        if probe.kind == "pod_condition":
+            return self._pod_condition(scope, selector, probe.condition_type, probe.value)
+        if probe.kind == "event_reason":
+            events = self.kube.list_events(scope.namespace)
+            reasons = [str(e.get("reason", "")) for e in events]
+            if any(probe.value in reason for reason in reasons):
+                return True
+            return f"event reasons seen: {reasons[-10:]}" if reasons else False
+        if probe.kind == "log_contains":
+            return self._log_contains(scope, probe.value)
+        raise ValueError(f"unknown symptom probe kind {probe.kind!r}")
+
+    def _container_state_reason(
+        self, scope: Scope, selector: str, state: str, want: str
+    ) -> bool | str:
+        pods = self.kube.list_resource("pod", scope.namespace, selector=selector)
+        reasons = []
+        for pod in pods:
+            statuses = pod.get("status", {}).get("containerStatuses") or []
+            for status in statuses:
+                info = status.get("state", {}).get(state)
+                if info:
+                    reason = str(info.get("reason", ""))
+                    reasons.append(reason)
+                    if reason == want:
+                        return True
+        return f"{state} reasons seen: {reasons}" if reasons else False
+
+    def _pod_condition(
+        self, scope: Scope, selector: str, condition_type: str, want_status: str
+    ) -> bool | str:
+        pods = self.kube.list_resource("pod", scope.namespace, selector=selector)
+        observed = []
+        for pod in pods:
+            conditions = pod.get("status", {}).get("conditions") or []
+            for condition in conditions:
+                if condition.get("type") == condition_type:
+                    status = str(condition.get("status", ""))
+                    observed.append(status)
+                    if status == want_status:
+                        return True
+        return f"{condition_type} statuses seen: {observed}" if observed else False
+
+    def _log_contains(self, scope: Scope, substring: str) -> bool | str:
+        result = self.loki.search_logs(
+            LogQuery(
+                query=f'{{namespace="{scope.namespace}", pod=~"{scope.app}-.*"}}',
+                start="-5m",
+                end="now",
+                limit=200,
+            )
+        )
+        for stream in result.streams:
+            for _, line in stream.lines:
+                if substring in line:
+                    return True
+        return f"{result.total_lines} log line(s) seen, none matching" if result.streams else False
+
+    # -- checker support ------------------------------------------------------
+
+    def render(self, app: str, namespace: str) -> str:
+        """Re-render the chart at whatever branch the workspace currently has
+        checked out. The runner leaves that as the proposal branch after a run
+        completes, the same state the agent's own validator rendered."""
+        result = subprocess.run(
+            [
+                str(self.helm_bin),
+                "template",
+                app,
+                str(self.workspace / "apps" / app),
+                "--namespace",
+                namespace,
+                "--kube-version",
+                self.kube_version,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"helm template failed for {app}: {result.stderr.strip()}")
+        return result.stdout
+
+    def read_file(self, rel_path: str) -> str:
+        """Read a file from the workspace's current checkout, e.g. values.yaml."""
+        target = self.workspace / rel_path
+        if not target.is_file():
+            raise FileNotFoundError(f"no file at {target}")
+        return target.read_text()

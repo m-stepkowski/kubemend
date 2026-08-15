@@ -116,8 +116,10 @@ tasks:
 
   evals:
     desc: "Run an eval sweep, e.g. task evals -- -s bad-image-tag -n 1 --model cheap"
+    # sync + direct binary, not `uv run`: same macOS .pth trap as `task run`.
+    deps: [sync]
     cmds:
-      - uv run kubemend evals {{.CLI_ARGS}}
+      - '{{.ROOT_DIR}}/.venv/bin/kubemend evals run {{.CLI_ARGS}}'
 
   # -- pinned tool binaries ------------------------------------------------
 

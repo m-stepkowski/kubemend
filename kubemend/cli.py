@@ -8,6 +8,7 @@ the whole harness against a real cluster before the write path exists.
 
 from __future__ import annotations
 
+import json
 import textwrap
 import uuid
 from pathlib import Path
@@ -16,10 +17,12 @@ from typing import Annotated, Any
 import anthropic
 import typer
 
+from evals.runner import evals_app
 from kubemend.config import RunConfig, load_config
 from kubemend.core.loop import run as run_loop
 from kubemend.core.model import RunResult, Scope, Task, Verdict
 from kubemend.llm.anthropic_client import AnthropicClient
+from kubemend.llm.client import LLMClient
 from kubemend.prompts import render
 from kubemend.tools.gitops.backend import GitBackend
 from kubemend.tools.gitops.gitea_backend import GiteaBackend
@@ -37,7 +40,8 @@ from kubemend.tools.observability.loki import LokiProvider, logs_tool_spec
 from kubemend.tools.observability.prometheus import PrometheusProvider, metrics_tool_spec
 from kubemend.tools.registry import ToolRegistry
 from kubemend.trace.recorder import TraceRecorder
-from kubemend.verify.gate import PipelineGate, validate_tool_spec
+from kubemend.trace.replay import replay as replay_events
+from kubemend.verify.gate import PipelineGate, VerificationGate, validate_tool_spec
 
 app = typer.Typer(
     name="kubemend",
@@ -47,6 +51,7 @@ app = typer.Typer(
 
 trace_app = typer.Typer(help="Inspect the JSONL trace a run writes.", no_args_is_help=True)
 app.add_typer(trace_app, name="trace")
+app.add_typer(evals_app, name="evals")
 
 
 class ReadOnlyGate:
@@ -139,6 +144,64 @@ def build_write_path(
     return proposer, PipelineGate(proposer=proposer, validator=validator)
 
 
+def execute_incident(
+    cfg: RunConfig,
+    task: Task,
+    run_id: str,
+    *,
+    llm: LLMClient,
+    read_only: bool,
+    lab_bin: Path = Path(".lab/bin"),
+    trace_dir: Path = Path("traces"),
+) -> RunResult:
+    """Assemble tools + gate for one incident and drive it through the loop.
+
+    Shared by `kubemend run` and the eval runner, so a sweep exercises exactly
+    the wiring a human invocation does rather than a second code path that can
+    drift from it. Workspace-existence policy (warn-and-degrade vs. fail fast)
+    is deliberately the caller's decision, not this function's — the CLI and a
+    cost-spending sweep want different answers to "no gitops workspace".
+    """
+    trace = TraceRecorder.open(trace_dir / f"{run_id}.jsonl")
+    registry = build_read_only_registry(cfg)
+    gate: VerificationGate = ReadOnlyGate()
+    proposer: Proposer | None = None
+
+    if not read_only:
+        proposer, gate = build_write_path(cfg, task.scope, run_id, lab_bin.resolve())
+        # Reads are registered with the write path, not with the read-only
+        # tools: without a proposer there is nothing to write and no reason to
+        # put chart internals into context.
+        reader = GitOpsReader(
+            Path(cfg.gitops.repo_path).expanduser().resolve(),
+            base_branch=cfg.gitops.base_branch,
+        )
+        registry.register(read_gitops_file_spec(reader))
+        registry.register(list_gitops_files_spec(reader))
+        registry.register(propose_tool_spec(proposer))
+        registry.register(validate_tool_spec(gate))
+
+    result = run_loop(task, cfg, llm=llm, registry=registry, gate=gate, trace=trace)
+    if result.success and proposer is not None:
+        result.pr_ref = _open_pr(proposer, task, result, cfg)
+    return result
+
+
+def resolve_model_tier(cfg: RunConfig, model: str) -> RunConfig:
+    """Point the main tier at the cheap model rather than teaching the loop
+    about a third tier: the loop asks for "main" for agent turns and "cheap"
+    for compaction and handoff, and that split stays meaningful. Same
+    vocabulary the eval runner uses (`--model cheap|main`).
+    """
+    if model == "cheap":
+        cfg.model.main = cfg.model.cheap.model_copy(
+            update={"max_cost_usd_per_run": cfg.model.main.max_cost_usd_per_run}
+        )
+    elif model != "main":
+        raise ValueError(f"--model must be 'main' or 'cheap', got {model!r}")
+    return cfg
+
+
 @app.command()
 def run(
     task: Annotated[
@@ -159,27 +222,17 @@ def run(
 ) -> None:
     """Diagnose an incident and propose a fix (read-only until M3)."""
     cfg = load_config(config)
-    if model == "cheap":
-        # Point the main tier at the cheap model rather than teaching the loop
-        # about a third tier: the loop asks for "main" for agent turns and
-        # "cheap" for compaction and handoff, and that split stays meaningful.
-        # Same vocabulary the eval runner uses (`--model cheap|main`).
-        cfg.model.main = cfg.model.cheap.model_copy(
-            update={"max_cost_usd_per_run": cfg.model.main.max_cost_usd_per_run}
-        )
-    elif model != "main":
-        typer.echo(f"--model must be 'main' or 'cheap', got {model!r}", err=True)
-        raise typer.Exit(code=2)
+    try:
+        cfg = resolve_model_tier(cfg, model)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
     scope = Scope(namespace=namespace, app=app_name)
     incident = Task(statement=task, scope=scope, window=window)
     run_id = uuid.uuid4().hex[:12]
-    trace = TraceRecorder.open(Path("traces") / f"{run_id}.jsonl")
-
-    registry = build_read_only_registry(cfg)
-    gate: Any = ReadOnlyGate()
-    proposer: Proposer | None = None
 
     workspace = Path(cfg.gitops.repo_path).expanduser()
+    effective_read_only = read_only
     if read_only:
         typer.echo("read-only: no write path registered")
     elif not (workspace / ".git").exists():
@@ -190,19 +243,7 @@ def run(
             "Run `task lab:workspace` to create one.",
             err=True,
         )
-    else:
-        proposer, gate = build_write_path(cfg, scope, run_id, Path(".lab/bin").resolve())
-        # Reads are registered with the write path, not with the read-only
-        # tools: without a proposer there is nothing to write and no reason to
-        # put chart internals into context.
-        reader = GitOpsReader(
-            Path(cfg.gitops.repo_path).expanduser().resolve(),
-            base_branch=cfg.gitops.base_branch,
-        )
-        registry.register(read_gitops_file_spec(reader))
-        registry.register(list_gitops_files_spec(reader))
-        registry.register(propose_tool_spec(proposer))
-        registry.register(validate_tool_spec(gate))
+        effective_read_only = True
 
     # Deliberately no ANTHROPIC_API_KEY precondition. The SDK resolves
     # credentials from several sources in order — the env var, an
@@ -219,17 +260,9 @@ def run(
         )
         raise typer.Exit(code=1) from exc
 
-    result = run_loop(
-        incident,
-        cfg,
-        llm=llm,
-        registry=registry,
-        gate=gate,
-        trace=trace,
+    result = execute_incident(
+        cfg, incident, run_id, llm=llm, read_only=effective_read_only, lab_bin=Path(".lab/bin")
     )
-
-    if result.success and proposer is not None:
-        result.pr_ref = _open_pr(proposer, incident, result, cfg)
     _report(result, model_name=cfg.model.main.name)
 
 
@@ -265,6 +298,7 @@ def _report(result: RunResult, *, model_name: str = "") -> None:
     typer.echo(f"reason:     {result.reason}")
     typer.echo(f"iterations: {result.iterations}")
     typer.echo(f"cost:       ${result.cost_usd:.4f}")
+    typer.echo(f"wall:       {result.wall_seconds:.1f}s")
     typer.echo(f"trace:      {result.trace_path}")
     if result.handoff is None:
         return
@@ -285,15 +319,53 @@ def _report(result: RunResult, *, model_name: str = "") -> None:
         typer.echo(f"  blocked by: {result.handoff.blocking_reason}")
 
 
-@app.command()
-def evals() -> None:
-    """Run scenario sweeps and emit the pass-rate report."""
-    typer.echo("`kubemend evals` is implemented in M4 (see IMPLEMENTATION_PLAN.md).", err=True)
-    raise typer.Exit(code=1)
-
-
 @trace_app.command()
-def replay() -> None:
-    """Reconstruct a run's event sequence from its trace."""
-    typer.echo("`kubemend trace replay` is implemented in M4.", err=True)
-    raise typer.Exit(code=1)
+def replay(
+    path: Annotated[Path, typer.Argument(help="Trace file, e.g. traces/<run_id>.jsonl")],
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Print raw JSONL instead of a one-line summary")
+    ] = False,
+) -> None:
+    """Reconstruct a run's event sequence from its trace.
+
+    The summary view is for eyeballing what happened; --json is for piping
+    into a new unit fixture or scenario, which is the point of the round-trip
+    guarantee this format keeps (CLAUDE.md: extend replay + its test together).
+    """
+    events = replay_events(path)
+    if not events:
+        typer.echo(f"no events at {path}", err=True)
+        raise typer.Exit(code=1)
+    if as_json:
+        for event in events:
+            typer.echo(json.dumps(event, sort_keys=True))
+        return
+    for index, event in enumerate(events):
+        typer.echo(f"[{index}] {_summarize_event(event)}")
+
+
+def _summarize_event(event: dict[str, Any]) -> str:
+    kind = event.get("type", "?")
+    if kind == "run_header":
+        return f"run_header task={event['task']!r} scope={event['namespace']}/{event['app']}"
+    if kind == "model_turn":
+        calls = ", ".join(c["name"] for c in event.get("tool_calls", []))
+        return (
+            f"model_turn tier={event['tier']} model={event['model']} "
+            f"cost=${event['cost_usd']:.4f} calls=[{calls}]"
+        )
+    if kind == "tool_call":
+        return f"tool_call {event['name']} ok={event['ok']} {event['duration_ms']}ms"
+    if kind == "nudge":
+        return f"nudge -> {event['name']}: {event['text'][:80]}"
+    if kind == "verdict":
+        names = [c["name"] for c in event["checks"]]
+        return f"verdict passed={event['passed']} checks={names}"
+    if kind == "handoff":
+        return f"handoff blocked_by={event.get('blocking_reason')}"
+    if kind == "result":
+        return (
+            f"result success={event['success']} reason={event['reason']} "
+            f"cost=${event['cost_usd']:.4f} iters={event['iterations']}"
+        )
+    return str(kind)

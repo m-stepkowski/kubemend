@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ .Chart.Name }}-pods
+  # Explicit so `kyverno apply` on rendered output matches the
+  # namespace-scoped policy pack; Argo would otherwise inject it.
+  namespace: {{ .Release.Namespace }}
+spec:
+  hard:
+    pods: "{{ .Values.quota.maxPods }}"
