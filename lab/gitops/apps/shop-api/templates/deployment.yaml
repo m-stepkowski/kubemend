@@ -17,6 +17,16 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: {{ .Chart.Name }}
+      annotations:
+        # A required env var is wired via configMapKeyRef, resolved at
+        # container start — Kubernetes does not restart a running pod when
+        # the ConfigMap it references changes. Without this, removing
+        # FEATURE_FLAGS (missing-configmap-key) is a no-op against pods that
+        # started before the break: nothing ever asks them to restart, so the
+        # fault never manifests. The standard Helm fix: hash the ConfigMap's
+        # rendered content into a pod annotation, so any change to it changes
+        # the pod template and forces a real rollout.
+        checksum/config: {{ include (print $.Template.BasePath "/service.yaml") . | sha256sum }}
     spec:
       securityContext:
         runAsNonRoot: true
