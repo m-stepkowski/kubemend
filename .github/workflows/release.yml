@@ -1,0 +1,23 @@
+name: Release
+
+# Triggered by pushing an annotated tag (v0.1, v0.2, ...). GitHub reads this
+# workflow from the tag's own commit, so it only fires for tags pushed after
+# this file first landed on main.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Auto-generated from merged PRs since the previous tag (or since
+          # the repo's start, for the first release).
+          generate_release_notes: true
