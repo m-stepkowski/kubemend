@@ -1,10 +1,10 @@
 """Validation pipeline (ARCHITECTURE.md §5).
 
-Four stages against the active branch's working tree: helm template, Kyverno
+Five stages against the active branch's working tree: helm template, Kyverno
 policy check against the project's own pack, live diff (argocd app diff, falling
-back to kubectl diff --server-side), and the harness-owned scope check. An empty
-diff fails as `no_effective_change` — it catches the model "fixing" a value by
-rewriting it to itself.
+back to kubectl diff --server-side), the harness-owned scope check, and a live
+quota-headroom check. An empty diff fails as `no_effective_change` — it catches
+the model "fixing" a value by rewriting it to itself.
 
 Uses the Taskfile-pinned helm and kyverno binaries, never PATH: the PATH helm on
 a developer machine was observed to be a full major version ahead of the pinned
@@ -23,9 +23,12 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
+
+import yaml
 
 from kubemend.core.model import CheckResult, DiffSummary, Scope, Verdict
+from kubemend.tools.base import ToolError
 
 # (kind, namespace, name)
 Resource = tuple[str, str, str]
@@ -49,6 +52,14 @@ class CommandRunner(Protocol):
         cwd: Path | None = None,
         env: Mapping[str, str] | None = None,
     ) -> CommandResult: ...
+
+
+class KubeQuery(Protocol):
+    def list_resource(
+        self, kind: str, namespace: str, selector: str | None = None
+    ) -> list[dict[str, Any]]: ...
+
+    def get_resource(self, kind: str, namespace: str, name: str) -> dict[str, Any]: ...
 
 
 class SubprocessRunner:
@@ -150,6 +161,11 @@ class Validator:
     argocd_server: str = ""
     argocd_token: str = ""
     argocd_plaintext: bool = True
+    # Read-only: only list_resource/get_resource, the same surface the agent's
+    # own get_k8s_state tool uses. None skips the quota stage (it passes
+    # automatically) so existing fixtures that never touch quota semantics
+    # need no dummy client.
+    kube: KubeQuery | None = None
     runner: CommandRunner = field(default_factory=SubprocessRunner)
 
     @property
@@ -157,7 +173,7 @@ class Validator:
         return bool(self.argocd_bin and self.argocd_token)
 
     def validate(self, apps: Sequence[str]) -> Verdict:
-        """Run the four stages, stopping at the first failure.
+        """Run the five stages, stopping at the first failure.
 
         Short-circuiting is deliberate: a policy result computed from manifests
         that did not render is noise, and the model only needs the first real
@@ -183,8 +199,15 @@ class Validator:
         resources = parse_resources(diff_text)
         scope_check = self._scope(resources)
         checks.append(scope_check)
+        if not scope_check.passed:
+            return Verdict(
+                passed=False, checks=checks, diff_summary=DiffSummary(resources=list(resources))
+            )
+
+        quota_check = self._quota(rendered)
+        checks.append(quota_check)
         return Verdict(
-            passed=scope_check.passed,
+            passed=quota_check.passed,
             checks=checks,
             diff_summary=DiffSummary(resources=list(resources)),
         )
@@ -351,6 +374,84 @@ class Validator:
                 ),
             )
         return CheckResult("scope", True, f"{len(resources)} resource(s), all in scope")
+
+    def _quota(self, rendered: str) -> CheckResult:
+        """Would the proposed replica count actually fit in the live namespace?
+
+        Render, policy, diff, and scope all pass on a Deployment whose replica
+        count the live ResourceQuota would refuse — the diff is real, in
+        scope, and policy-clean, yet the resulting pods would sit Pending
+        forever. Only checks `pods`, the one dimension the lab's own quota
+        tracks; `requests.cpu`/`requests.memory` would need the same shape.
+        A namespace can hold more than one workload against a shared quota, so
+        this subtracts the resource's own current live contribution from what
+        the quota already reports used, rather than assuming the quota is
+        this app's alone.
+
+        Skipped (passes) when no kube client is wired in, so existing fixtures
+        that never touch quota semantics need no dummy client.
+        """
+        if self.kube is None:
+            return CheckResult("quota", True, "no kube client wired in; quota check skipped")
+
+        try:
+            for doc in yaml.safe_load_all(rendered):
+                if not isinstance(doc, dict) or doc.get("kind") not in (
+                    "Deployment",
+                    "StatefulSet",
+                ):
+                    continue
+                metadata = doc.get("metadata") or {}
+                namespace, name = metadata.get("namespace"), metadata.get("name")
+                proposed = (doc.get("spec") or {}).get("replicas")
+                if not namespace or not name or proposed is None:
+                    continue
+
+                failure = self._quota_headroom(namespace, name, int(proposed))
+                if failure is not None:
+                    return failure
+        except ToolError as exc:
+            return CheckResult("quota", False, f"could not check live quota headroom: {exc}")
+        return CheckResult("quota", True, "proposed replica counts fit within live quota headroom")
+
+    def _quota_headroom(self, namespace: str, name: str, proposed: int) -> CheckResult | None:
+        assert self.kube is not None  # narrowed by the caller
+        for quota in self.kube.list_resource("resourcequota", namespace):
+            hard_pods = (quota.get("spec") or {}).get("hard", {}).get("pods")
+            if hard_pods is None:
+                continue
+            used_pods = int((quota.get("status") or {}).get("used", {}).get("pods", 0))
+            try:
+                live = self.kube.get_resource("deployment", namespace, name)
+                # status.replicas, not spec.replicas: spec is the *desired*
+                # count, which can already be an unfulfillable number — that
+                # is exactly the broken state being diagnosed. status.replicas
+                # is how many pods this Deployment actually owns right now,
+                # the quantity genuinely counted in the quota's current usage.
+                # Reading spec here inverted the math: a live spec.replicas of
+                # 6 against status quo pods=4 produced a *negative* "other
+                # usage", making an over-quota proposal look like it fit.
+                current_replicas = int((live.get("status") or {}).get("replicas", 0))
+            except ToolError:
+                # Not live yet (first-ever proposal for this app) — nothing of
+                # its own to subtract from the quota's current usage.
+                current_replicas = 0
+            other_usage = used_pods - current_replicas
+            projected = other_usage + proposed
+            hard_pods_int = int(hard_pods)
+            if projected > hard_pods_int:
+                quota_name = (quota.get("metadata") or {}).get("name", "?")
+                return CheckResult(
+                    name="quota",
+                    passed=False,
+                    detail=(
+                        f"{name}: {proposed} replicas would bring {namespace} to "
+                        f"{projected} pods, exceeding quota {quota_name} "
+                        f"(hard.pods={hard_pods_int}; other workloads in this namespace "
+                        f"already use {other_usage})"
+                    ),
+                )
+        return None
 
 
 def _policy_evaluated(stdout: str) -> int:

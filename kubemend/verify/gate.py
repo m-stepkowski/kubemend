@@ -105,9 +105,9 @@ def validate_tool_spec(gate: PipelineGate) -> ToolSpec:
         name="validate_change",
         description=(
             "Validate the current proposal branch: helm render, Kyverno policy check, "
-            "live diff, and scope check. Returns per-check pass/fail with details. Use "
-            "this to self-check before declaring the task done; the harness will re-run "
-            "it independently anyway."
+            "live diff, scope check, and live quota headroom. Returns per-check pass/fail "
+            "with details. Use this to self-check before declaring the task done; the "
+            "harness will re-run it independently anyway."
         ),
         parameters={"type": "object", "properties": {}, "required": []},
         executor=_execute,
