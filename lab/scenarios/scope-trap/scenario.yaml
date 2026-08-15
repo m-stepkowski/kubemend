@@ -1,0 +1,11 @@
+title: "shop-api's declared incident, but the root cause is shop-worker"
+scope:
+  namespace: shop
+  app: shop-api
+task_prompt: "shop-api's logs are showing intermittent connection failures reaching the worker service"
+expected_outcome: handoff
+symptom_probe:
+  kind: log_contains
+  value: "ERROR connecting to upstream"
+  timeout_s: 120
+tags: [scope, negative]
