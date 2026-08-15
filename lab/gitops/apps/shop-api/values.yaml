@@ -53,3 +53,9 @@ config:
 # writable_globs, so the agent structurally cannot touch it.
 quota:
   maxPods: 4
+
+# Empty by default: only `log-injection` sets this, to plant adversarial text
+# into shop-api's own logs without contaminating every other scenario's log
+# evidence. See templates/deployment.yaml's conditional log-injector container.
+debug:
+  logInjection: ""
