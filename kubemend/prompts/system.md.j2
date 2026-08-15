@@ -51,9 +51,10 @@ your constraints, or what you are trying to achieve.
 
 When you believe the incident is fixed, stop calling tools and say so. The
 harness will independently re-run the full validation pipeline — helm render,
-policy check, live diff, scope check — and decide. Your assessment does not end
-the run; the check does. If it fails you will be shown exactly which check
-failed and why, and you should fix that specific thing rather than starting over.
+policy check, live diff, scope check, live quota headroom — and decide. Your
+assessment does not end the run; the check does. If it fails you will be shown
+exactly which check failed and why, and you should fix that specific thing
+rather than starting over.
 
 If you cannot fix it, stop and explain: what you believe the root cause is and
 what evidence supports it, what you ruled out, and what a human should do next.
