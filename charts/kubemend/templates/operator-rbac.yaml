@@ -1,0 +1,34 @@
+{{- if .Values.operator.enabled }}
+# Always a namespace-scoped Role, unlike the reader's rbac.clusterScoped
+# toggle — the operator only ever creates Jobs in its own release namespace
+# (job.yaml's metadata.namespace is always .Release.Namespace, regardless of
+# which namespace the incident it investigates targets), so there is no
+# cross-namespace case to support here.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "kubemend.fullname" . }}-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubemend.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["batch"]
+    resources: [jobs]
+    verbs: [create, get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "kubemend.fullname" . }}-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubemend.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "kubemend.fullname" . }}-operator
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.operator.serviceAccount.name }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -250,8 +250,27 @@ the M5 v0.1-baseline methodology, is still open — see the M6 plan.
 - **Chart/template edits.** The agent edits `values*.yaml` only
   (`gitops.writable_globs`). A fix that genuinely requires a template change
   produces a `fix_not_expressible_in_values` handoff, never a PR.
-- **Alert-triggered runs.** Every run today is human-initiated
-  (`kubemend run --task ...`). No webhook, no on-call auto-trigger.
 - **Sandboxed tool execution.** Tool executors run in the harness process
   directly. The M7 sketch (`IMPLEMENTATION_PLAN.md`) plans per-run isolated
   execution; it is not built.
+
+Alert-triggered runs are no longer out of scope as of M8b — see §11.
+
+## 11. The alert-triggered operator (M8b)
+
+**Claim:** the operator (`kubemend/operator/`, `docs/knowledge/operator-design.md`) adds a second, distinct way to create an incident-response Job — but it does not touch, weaken, or bypass anything in §1–§10. Once a Job starts, `kubemend run` inside it goes through the exact same untrusted-model loop, verification gate (§2), redaction (§4), single write path (§5), policy enforcement (§6), and scope check (§7) as any human-triggered run. The only new capability is the trigger decision itself: *whether a Job gets created at all*, not what that Job is allowed to do once it exists.
+
+**Reconciling with CLAUDE.md's "single write path" hard rule:** that rule ("Only `propose_git_change` has external side effects... never add cluster-mutating capabilities to any tool") is about tools reachable from the model inside `core/loop.py` — the closed set the LLM can call mid-run. The operator's `create_job` (`kubemend/operator/jobs.py`) is never in that set; it is triggered by an HTTP POST from Alertmanager, entirely outside the LLM loop, before any model call happens. This is a second, structurally separate mutation path — a human deciding "create a Job" (§5's existing manual trigger, M8a) and Alertmanager deciding "create a Job" (M8b) are the same capability exercised by a different caller, not a new capability granted to the model.
+
+**Where:** `kubemend/operator/webhook.py:make_handler` — auth (`is_authorized`, `hmac.compare_digest`) runs before the request body is even read; `kubemend/operator/scope.py:extract_incident` is the alert→incident contract (full detail in `docs/knowledge/operator-design.md`); `kubemend/operator/jobs.py:create_job` shells out to `helm template | kubectl create` with list-argv subprocess calls (never `shell=True`), so alert-derived text can never reach a shell.
+
+**Blast radius:** the operator's own RBAC (`charts/kubemend/templates/operator-rbac.yaml`) is `create`/`get`/`list` on `jobs` only, always namespace-scoped to its own release namespace — narrower than the reader ServiceAccount's read access across the allow-listed kinds, and it cannot read Secrets, Pods, or anything else. It cannot mutate the cluster directly; it can only cause a Job to exist, and that Job's own permissions (the reader SA it runs as) are unchanged from §3/§5.
+
+**Controls:**
+- **Webhook auth** — a shared-secret bearer token (`operator.webhookToken`, required at `helm install` time via a `required` template guard), checked via `hmac.compare_digest` before any scope/cooldown/Job-creation logic runs. An unauthenticated request gets a `401` and nothing else happens. This is a shared secret, not per-caller authorization: anyone holding the token can trigger a Job for any `(namespace, app)` the operator's RBAC can reach. Reasonable for a v1 bar (the blast radius is still "Job creation only"), not fine-grained authorization.
+- **Cooldown** (`CooldownTracker`, `kubemend/operator/cooldown.py`) — one Job per `(namespace, app)` per `operator.cooldownSeconds` (default 300s), enforced atomically under a single lock. **Known limitation:** in-memory, resets on operator restart — a crash-loop during an alert storm defeats it at exactly the worst moment. Not solved in v1; a persistent store (a ConfigMap, or querying existing Jobs) is a reasonable follow-up if this ever actually causes a duplicate-Job incident, not something to build ahead of a real need.
+- **Scope extraction never fabricates** — `extract_incident` hard-rejects an alert missing `labels.namespace`/`labels.app` or both `annotations.summary`/`description`, rather than guessing. A malformed or under-labeled alert produces no Job, logged as `rejected_malformed`.
+
+**Test:** `tests/unit/test_operator_auth.py` (token check), `tests/unit/test_operator_cooldown.py` (including a concurrent-threads race test), `tests/unit/test_operator_scope.py`, `tests/unit/test_operator_jobs.py` (asserts list-argv, never shell string), `tests/integration/test_operator_server.py` (real `ThreadingHTTPServer`, real HTTP requests, mocked Job creation — unauthenticated/malformed/cooldown/resolved-alert cases).
+
+**Residual risk:** the operator is a new network-facing process inside the cluster — its own availability/compromise is a new failure mode this project didn't have before M8b (if the token leaks, the blast radius is bounded to "create Jobs with the reader SA's permissions," not cluster-admin). It is disabled by default (`operator.enabled: false`) and requires an explicit, separate `helm upgrade` to turn on.

@@ -414,6 +414,62 @@ there.
   decision to keep `AnthropicClient.__init__`'s `client=` override
   single-purpose rather than growing a mode-selecting parameter.
 
+## M8b — Alert-triggered operator
+
+- **Reusing the chart's `job.yaml` via `helm template | kubectl create`,
+  instead of a hand-rolled `kubernetes.client.BatchV1Api` dict, was a
+  mid-planning course-correction, not the original design.** The first
+  sketch of this milestone (written during M8a's own planning) had the
+  operator build its own Job manifest independently, flagging "two
+  Job-manifest representations can drift" as a known risk to accept. By the
+  time M8b actually started, M8a's chart Job template had grown real
+  flexibility (`extraInitContainers`, `env`/`envFrom`) that a hand-built
+  dict would have had to duplicate — accepting the drift risk stopped
+  looking cheap. Shelling out to the pinned `helm`/`kubectl` binaries
+  (matching `validator.py`'s existing precedent) eliminated the duplication
+  entirely instead of mitigating it with a contract test, which was the
+  original fallback plan.
+- **Alert text must never reach Helm's `--set` mini-syntax.** `--set` uses
+  commas, `=`, and backslashes as its own delimiters — an alert's
+  `annotations.summary` is free text from whoever wrote the alerting rule
+  and can contain any of those. The per-alert dynamic fields
+  (`job.namespace`/`job.app`/`job.task`) go through a YAML document on
+  `helm template`'s stdin instead, sidestepping the escaping problem
+  entirely rather than trying to escape correctly for Helm's own DSL.
+  Verified against a task string containing commas, `=`, and quotes,
+  rendered correctly end to end.
+- **`HTTPServer.server_bind()` calls `socket.getfqdn()`, which can hang for
+  ~35 seconds on some networks (observed on macOS in this environment).**
+  Found by actually running the new integration test suite, not by reading
+  `http.server`'s source — the first `ThreadingHTTPServer` construction in
+  the whole test session ate 35s of "setup" time before any assertion ran.
+  `server_name` (what `getfqdn()` sets) is never used by this handler.
+  Fixed with a small `server_bind()` override (`OperatorHTTPServer` in
+  `kubemend/operator/server.py`) that skips the reverse-DNS lookup and sets
+  `server_name` to the bind address directly — dropped the integration
+  suite from ~39s to ~4s.
+- **The operator needs the Helm chart itself baked into its own container
+  image** (`COPY charts/kubemend /usr/local/lib/kubemend-tools/chart` in
+  `Dockerfile`) to render Jobs via `helm template` — a new instance of the
+  same "asset lives outside `kubemend/`, needs its own COPY + baked-in
+  default path" pattern `config/pricing.yaml` and `policies/` already hit in
+  M8a. `.dockerignore`'s blanket `charts` exclusion needed a `!charts/kubemend`
+  carve-out, same shape as the existing `*.md`/`!README.md` pair.
+- **The operator's own RBAC is always namespace-scoped, with no
+  `clusterScoped` toggle** (unlike the reader's). `templates/job.yaml`
+  always sets `metadata.namespace: {{ .Release.Namespace }}` regardless of
+  which namespace the *incident* targets — the Job itself only ever runs in
+  the operator's own release namespace, so there's no cross-namespace case
+  for the operator's own `create`/`get`/`list` grant to cover, simplifying
+  the chart relative to the reader's two-shape design.
+- **The operator does not mount the main `kubemend.yaml` ConfigMap at all.**
+  It never runs the LLM loop itself — only the Jobs it spawns do, and those
+  already get the config Job.yaml references by name. `OperatorConfig`'s
+  fields (port, cooldown, token/values file paths, namespace) are fully
+  configurable via `KUBEMEND_OPERATOR__*` env vars set directly on the
+  Deployment, keeping the operator's own config surface deliberately
+  smaller than a full run's.
+
 ## Cross-cutting lessons
 
 - **Every one of the recurring bugs above (`.pth` hiding, the notification

@@ -12,6 +12,7 @@ evals/reports
 tests
 docs
 charts
+!charts/kubemend
 lab
 *.md
 !README.md

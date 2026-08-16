@@ -1,0 +1,39 @@
+{{- if .Values.operator.enabled }}
+# The operator (M8b) shells out to `helm template` to create incident Jobs,
+# reusing job.yaml's shape and escape hatches instead of duplicating them as
+# a hand-built manifest. This ConfigMap is that render's static half — the
+# image, serviceAccount, and job.* fields fixed at install time — mounted
+# into the operator's own container. The operator supplies only the three
+# per-alert dynamic fields (namespace, app, task) on top of this at trigger
+# time (kubemend/operator/jobs.py).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kubemend.fullname" . }}-operator-job-values
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubemend.labels" . | nindent 4 }}
+data:
+  job-values.yaml: |
+    image:
+      repository: {{ .Values.image.repository }}
+      tag: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
+      pullPolicy: {{ .Values.image.pullPolicy }}
+    serviceAccount:
+      name: {{ .Values.serviceAccount.name }}
+    job:
+      window: {{ .Values.job.window | quote }}
+      model: {{ .Values.job.model | quote }}
+      backoffLimit: {{ .Values.job.backoffLimit }}
+      ttlSecondsAfterFinished: {{ .Values.job.ttlSecondsAfterFinished }}
+      extraInitContainers:
+        {{- toYaml .Values.job.extraInitContainers | nindent 8 }}
+      extraVolumes:
+        {{- toYaml .Values.job.extraVolumes | nindent 8 }}
+      extraVolumeMounts:
+        {{- toYaml .Values.job.extraVolumeMounts | nindent 8 }}
+      env:
+        {{- toYaml .Values.job.env | nindent 8 }}
+      envFrom:
+        {{- toYaml .Values.job.envFrom | nindent 8 }}
+{{- end }}

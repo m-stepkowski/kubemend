@@ -1,0 +1,84 @@
+{{- if .Values.operator.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kubemend.fullname" . }}-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubemend.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "kubemend.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: operator
+  template:
+    metadata:
+      labels:
+        {{- include "kubemend.labels" . | nindent 8 }}
+        app.kubernetes.io/component: operator
+    spec:
+      serviceAccountName: {{ .Values.operator.serviceAccount.name }}
+      containers:
+        - name: operator
+          image: {{ include "kubemend.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # KUBEMEND_OPERATOR__CHART_DIR is already set by the image itself
+          # (Dockerfile) to where this same chart is baked in — nothing to
+          # set here for that. The operator doesn't need model/gitops/
+          # observability config (it only spawns Jobs that use those, via
+          # the ConfigMap job.yaml already references by name), so no main
+          # kubemend.yaml is mounted here.
+          args: ["operator", "serve"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.operator.port }}
+          env:
+            - name: KUBEMEND_OPERATOR__PORT
+              value: {{ .Values.operator.port | quote }}
+            - name: KUBEMEND_OPERATOR__COOLDOWN_SECONDS
+              value: {{ .Values.operator.cooldownSeconds | quote }}
+            - name: KUBEMEND_OPERATOR__NAMESPACE
+              value: {{ .Release.Namespace }}
+            - name: KUBEMEND_OPERATOR__RELEASE_NAME
+              value: {{ .Release.Name }}
+            - name: KUBEMEND_OPERATOR__WEBHOOK_TOKEN_FILE
+              value: /etc/kubemend/webhook-token/token
+            - name: KUBEMEND_OPERATOR__JOB_VALUES_FILE
+              value: /etc/kubemend/operator-job-values.yaml
+            {{- with .Values.operator.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.operator.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: webhook-token
+              mountPath: /etc/kubemend/webhook-token
+              readOnly: true
+            - name: job-values
+              mountPath: /etc/kubemend/operator-job-values.yaml
+              subPath: job-values.yaml
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+          {{- with .Values.operator.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: webhook-token
+          secret:
+            secretName: {{ include "kubemend.fullname" . }}-operator-webhook-token
+        - name: job-values
+          configMap:
+            name: {{ include "kubemend.fullname" . }}-operator-job-values
+{{- end }}
