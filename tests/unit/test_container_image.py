@@ -130,6 +130,22 @@ def test_pricing_table_is_present_at_its_baked_in_default(built_image: str) -> N
 
 
 @pytest.mark.docker
+def test_helm_chart_is_baked_in_and_renders(built_image: str) -> None:
+    """The operator (M8b) shells out to `helm template` against this chart to
+    create incident Jobs — same class of gap as pricing.yaml/policies/ above
+    if it's ever missing from the image, except here the failure mode is a
+    hard error (helm can't find the chart) rather than a silent one."""
+    result = _run_in_image(
+        built_image,
+        "$KUBEMEND_BIN_DIR/helm template $KUBEMEND_OPERATOR__CHART_DIR "
+        "-s templates/job.yaml --set job.enabled=true --set job.namespace=x "
+        "--set job.app=y --set 'job.task=z' > /dev/null",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.docker
 @pytest.mark.parametrize("binary", ["helm", "kubectl", "kyverno", "argocd"])
 def test_pinned_binary_is_present_at_the_dockerfile_pinned_version(
     built_image: str, binary: str

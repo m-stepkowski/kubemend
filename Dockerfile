@@ -55,6 +55,7 @@ ENV PYTHONUNBUFFERED=1 \
     KUBEMEND_BIN_DIR=/usr/local/lib/kubemend-tools \
     KUBEMEND_MODEL__PRICING_TABLE=/usr/local/lib/kubemend-tools/pricing.yaml \
     KUBEMEND_POLICIES_DIR=/usr/local/lib/kubemend-tools/policies \
+    KUBEMEND_OPERATOR__CHART_DIR=/usr/local/lib/kubemend-tools/chart \
     PATH="/src/.venv/bin:$PATH"
 
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
@@ -78,6 +79,11 @@ COPY --from=binaries /bin-out/ /usr/local/lib/kubemend-tools/
 # through a Job, not by review.
 COPY config/pricing.yaml /usr/local/lib/kubemend-tools/pricing.yaml
 COPY policies /usr/local/lib/kubemend-tools/policies
+# The operator (M8b) shells out to `helm template` against this chart to
+# create incident Jobs, reusing the exact same Job shape and escape hatches
+# (extraInitContainers, env/envFrom) the manual helm-install path already
+# has, instead of duplicating them as a hand-built Job manifest.
+COPY charts/kubemend /usr/local/lib/kubemend-tools/chart
 
 WORKDIR /workspace
 RUN chown kubemend:kubemend /workspace
