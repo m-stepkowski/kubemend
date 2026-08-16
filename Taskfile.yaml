@@ -118,6 +118,18 @@ tasks:
           uv run mypy --config-file {{.ROOT_DIR}}/pyproject.toml "$f"
         done
 
+  chart:lint:
+    desc: Lint and render the kubemend Helm chart (default, cluster-scoped, and job-enabled values)
+    deps: [tool:helm]
+    cmds:
+      - '{{.LAB_BIN}}/helm lint charts/kubemend'
+      - '{{.LAB_BIN}}/helm template charts/kubemend > /dev/null'
+      - '{{.LAB_BIN}}/helm template charts/kubemend --set rbac.clusterScoped=true > /dev/null'
+      - |
+        {{.LAB_BIN}}/helm template charts/kubemend \
+          --set job.enabled=true --set job.namespace=shop --set job.app=shop-api \
+          --set 'job.task=test incident' > /dev/null
+
   fmt:
     desc: Apply ruff formatting and safe autofixes
     cmds:
@@ -153,6 +165,7 @@ tasks:
     cmds:
       - |
         set -eu
+        mkdir -p {{.LAB_BIN}}
         tmp=$(mktemp -d)
         curl -fsSL "https://get.helm.sh/helm-{{.HELM_VERSION}}-{{.OS}}-{{.ARCH}}.tar.gz" \
           | tar -xz -C "$tmp"

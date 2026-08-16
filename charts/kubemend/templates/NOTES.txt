@@ -1,0 +1,28 @@
+kubemend is installed into {{ .Release.Namespace }}.
+
+The reader ServiceAccount ({{ .Values.serviceAccount.name }}) is ready, with
+{{- if .Values.rbac.clusterScoped }} cluster-wide{{ else }} namespace-scoped{{ end }} read-only RBAC. No
+incident-response Job is running — this chart never spawns one on
+`helm install` alone.
+
+To trigger a run against a specific incident, render and apply the Job
+template directly. This only needs a narrow "create Job" RBAC grant in
+{{ .Release.Namespace }} for whoever runs it — not the reader's read-only
+access, and not a full kubeconfig with cluster credentials:
+
+  helm template {{ .Release.Name }} <chart> \
+    --namespace {{ .Release.Namespace }} \
+    --set job.enabled=true \
+    --set job.namespace=<target-namespace> \
+    --set job.app=<target-app> \
+    --set job.task="<what happened>" \
+    -s templates/job.yaml \
+    | kubectl create -f -
+
+Watch it:
+
+  kubectl -n {{ .Release.Namespace }} get jobs -w
+  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/instance={{ .Release.Name }} -f
+
+This chart does not manage your GitOps repo checkout or credentials — see
+charts/kubemend/README.md for how to wire those in via job.extraInitContainers.

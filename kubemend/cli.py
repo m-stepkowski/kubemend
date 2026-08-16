@@ -17,7 +17,6 @@ from typing import Annotated, Any
 
 import typer
 
-from evals.runner import evals_app
 from kubemend.config import RunConfig, load_config
 from kubemend.core.loop import run as run_loop
 from kubemend.core.model import RunResult, Scope, Task, Verdict
@@ -34,7 +33,7 @@ from kubemend.tools.gitops.reader import (
     read_gitops_file_spec,
 )
 from kubemend.tools.gitops.validator import Validator
-from kubemend.tools.kubernetes.api import KubeApiClient
+from kubemend.tools.kubernetes.factory import build_kube_client
 from kubemend.tools.kubernetes.reader import KubernetesReader, k8s_tool_spec
 from kubemend.tools.observability.loki import LokiProvider, logs_tool_spec
 from kubemend.tools.observability.prometheus import PrometheusProvider, metrics_tool_spec
@@ -51,7 +50,19 @@ app = typer.Typer(
 
 trace_app = typer.Typer(help="Inspect the JSONL trace a run writes.", no_args_is_help=True)
 app.add_typer(trace_app, name="trace")
-app.add_typer(evals_app, name="evals")
+
+# `evals/` is deliberately excluded from the built wheel (dev/eval-only, not
+# part of what `pip install kubemend` or the container image ships — see
+# pyproject.toml's [tool.hatch.build.targets.wheel] and docs/decisions.md).
+# A real install must still work for `kubemend run`/`operator serve` without
+# it; a dev checkout (evals/ importable via the repo root) gets the extra
+# subcommand for free.
+try:
+    from evals.runner import evals_app
+except ModuleNotFoundError:
+    pass
+else:
+    app.add_typer(evals_app, name="evals")
 
 
 class ReadOnlyGate:
@@ -85,9 +96,7 @@ class ReadOnlyGate:
 def build_read_only_registry(cfg: RunConfig) -> ToolRegistry:
     prometheus = PrometheusProvider(cfg.observability.prometheus_url)
     loki = LokiProvider(cfg.observability.loki_url)
-    reader = KubernetesReader(
-        KubeApiClient(cfg.kubernetes.kubeconfig, context=cfg.kubernetes.context or None)
-    )
+    reader = KubernetesReader(build_kube_client(cfg.kubernetes))
     return ToolRegistry(
         [
             metrics_tool_spec(prometheus),
@@ -135,14 +144,14 @@ def build_write_path(
         helm_bin=lab_bin / "helm",
         kyverno_bin=lab_bin / "kyverno",
         kubectl_bin=lab_bin / "kubectl",
-        policies_dir=Path("policies").resolve(),
+        policies_dir=cfg.policies_dir.resolve(),
         argocd_bin=lab_bin / "argocd",
         argocd_server=cfg.argocd.server,
         argocd_token=(argocd_token_file.read_text().strip() if argocd_token_file.is_file() else ""),
         argocd_plaintext=cfg.argocd.plaintext,
         # Same read-only identity the agent's own get_k8s_state tool uses —
         # the quota check only lists/gets, so it needs nothing more.
-        kube=KubeApiClient(cfg.kubernetes.kubeconfig, context=cfg.kubernetes.context or None),
+        kube=build_kube_client(cfg.kubernetes),
     )
     return proposer, PipelineGate(proposer=proposer, validator=validator)
 
@@ -234,6 +243,14 @@ def run(
         str, typer.Option("--model", help="Which tier drives agent turns: main | cheap")
     ] = "main",
     config: Annotated[Path, typer.Option("--config")] = Path("kubemend.yaml"),
+    bin_dir: Annotated[
+        Path,
+        typer.Option(
+            "--bin-dir",
+            envvar="KUBEMEND_BIN_DIR",
+            help="Directory holding pinned helm/kyverno/kubectl/argocd binaries",
+        ),
+    ] = Path(".lab/bin"),
 ) -> None:
     """Diagnose an incident and propose a fix (read-only until M3)."""
     cfg = load_config(config)
@@ -273,7 +290,7 @@ def run(
         raise typer.Exit(code=1) from exc
 
     result = execute_incident(
-        cfg, incident, run_id, llm=llm, read_only=effective_read_only, lab_bin=Path(".lab/bin")
+        cfg, incident, run_id, llm=llm, read_only=effective_read_only, lab_bin=bin_dir
     )
     _report(result, model_name=cfg.model.main.name)
 

@@ -1,0 +1,51 @@
+{{- if .Values.rbac.clusterScoped }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kubemend.fullname" . }}-reader
+  labels:
+    {{- include "kubemend.labels" . | nindent 4 }}
+rules:
+  {{- include "kubemend.readerRules" . | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kubemend.fullname" . }}-reader
+  labels:
+    {{- include "kubemend.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kubemend.fullname" . }}-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Release.Namespace }}
+{{- else }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "kubemend.fullname" . }}-reader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubemend.labels" . | nindent 4 }}
+rules:
+  {{- include "kubemend.readerRules" . | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "kubemend.fullname" . }}-reader
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubemend.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "kubemend.fullname" . }}-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

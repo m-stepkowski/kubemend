@@ -27,6 +27,12 @@ jobs:
         run: task lint
 
       # Unit tests only; `lab`-marked integration tests need a kind cluster
-      # and are excluded by the default pytest addopts.
+      # and `docker`-marked ones need a Docker daemon — both are excluded by
+      # the default pytest addopts.
       - name: Unit tests
         run: task test
+
+      # helm lint + a render smoke test across the chart's real value
+      # permutations (default, cluster-scoped RBAC, job-enabled).
+      - name: Helm chart lint
+        run: task chart:lint

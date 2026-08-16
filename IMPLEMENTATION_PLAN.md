@@ -128,13 +128,23 @@ Accept: full unit + conformance-test suite green, including a byte-identical-req
 
 ---
 
-## M8 — Packaging & deployment (1–2 sessions)
+## M8a — Packaging (shipped, v0.4 — done in this session)
 
 **Goal:** kubemend runs somewhere other than the author's laptop.
 
-Scope: multi-arch (amd64+arm64) container image baking the Taskfile-pinned `helm`/`kyverno`/`kubectl` binaries (never system PATH versions, same discipline as the lab); publish to ghcr.io on release tags by extending the existing `.github/workflows/release.yml`; a Helm chart for in-cluster runs (Job-per-incident pattern, read-only ServiceAccount reusing `lab/bootstrap/rbac.yaml`'s rules, values for config/env/secret refs); in-cluster kubeconfig support in `KubeApiClient` (currently `Path`-only — needs `load_incluster_config`); PyPI publish (decide whether to widen `requires-python = ">=3.12,<3.13"` first; consider an extras split, e.g. `kubemend[bedrock]`, so the base install doesn't pull `boto3`).
+Scope: multi-arch (amd64+arm64) container image baking the Taskfile-pinned `helm`/`kyverno`/`kubectl`/`argocd` binaries (never system PATH versions, same discipline as the lab) via a `Dockerfile` built on native GitHub-hosted arm64 runners (no QEMU); publish to ghcr.io on release tags by extending the existing `.github/workflows/release.yml` (build-by-digest + `docker buildx imagetools create` manifest merge); PyPI publish via OIDC trusted publishing (`requires-python` stays `>=3.12,<3.13`, no extras split — decided against it, not worth the complexity yet); in-cluster kubeconfig support (`KubeApiClient.in_cluster()`, dispatched by `kubemend/tools/kubernetes/factory.py:build_kube_client`, selected via `KubernetesConfig.in_cluster`); a Helm chart (`charts/kubemend/`) installing the reader ServiceAccount/RBAC (reusing `lab/bootstrap/rbac.yaml`'s rules, namespace-scoped by default, `rbac.clusterScoped` for cluster-wide) and a `job.enabled`-gated Job template for a manual, human-triggered run — the actual near-term value is access control (narrow "create Job" RBAC instead of the full reader grant), not automation.
 
-Accept: `helm install` + one Job completes a real incident from inside the lab cluster; `pip install kubemend` followed by the README quickstart works on a clean machine; the image builds reproducibly for both architectures in CI.
+Accept: `helm install` + the manual `job.enabled=true` fallback path completes a real incident from inside the lab cluster; `pip install kubemend` followed by the README quickstart works on a clean machine; the ghcr.io image is pullable for both architectures from a single tag; `task lint`/`task test`/`task chart:lint` green.
+
+---
+
+## M8b — Alert-triggered operator (deferred, not started)
+
+**Goal:** kubemend can be triggered by a firing Prometheus alert, not only by a human running the CLI or the M8a manual Job path.
+
+Scope: new `kubemend/operator/` package — a `ThreadingHTTPServer` webhook receiver (stdlib `http.server`, no framework) accepting Alertmanager-shaped POSTs, a pure `extract_incident(alert) -> IncidentRequest | RejectReason` scope function, an in-memory `CooldownTracker` (one lock, TOCTOU-safe `try_acquire`), and Job creation via `kubernetes.client.BatchV1Api` directly (deliberately not through `KubeApiClient`, which stays a pure read adapter) — its own RBAC identity scoped to `create`/`get`/`list` on `jobs` only. **Webhook authentication is required, not optional**: a shared-secret bearer token checked via `hmac.compare_digest` before any scope/cooldown logic runs. New Helm templates (`operator-deployment.yaml`, `operator-service.yaml`, `operator-rbac.yaml`, a Secret for the token), gated `operator.enabled`. Needs an explicit new `docs/threat-model.md` §11: this is the project's first component making an autonomous mutating decision without a human in the loop, and CLAUDE.md's "single write path" rule (about tools reachable from the model inside `core/loop.py`) does not cover it — the operator's Job creation is triggered by Alertmanager, entirely outside the LLM loop, and the threat model needs to say so explicitly rather than leave it looking like a contradiction.
+
+Accept: `helm install` with `operator.enabled=true` becomes ready; an authenticated synthetic Alertmanager POST creates a Job that completes a real incident; an unauthenticated POST is rejected before reaching cooldown/scope logic; a second authenticated POST for the same `(namespace, app)` within the cooldown window creates no second Job.
 
 ---
 
@@ -150,7 +160,7 @@ Accept: unit suite green including new contract tests for both providers; the ex
 
 ## M10 — Sandbox execution substrate (multi-session; not planned in detail here)
 
-Per-run isolated tool execution replacing direct executor calls (the Option A platform work: agent-sandbox + a Kyverno pack, Go controllers) — deferred behind M7–M9 rather than first, since opening the tool to more models and making it runnable outside the lab are the more immediate blockers to anyone else trying it. Then chart-editing behind a new risk gate, then alert-triggered runs. Each phase is its own blog post; the sandbox phase is KubeCon-CFP-scale work, not a milestone to bolt onto an existing session.
+Per-run isolated tool execution replacing direct executor calls (the Option A platform work: agent-sandbox + a Kyverno pack, Go controllers) — deferred behind M7–M9 rather than first, since opening the tool to more models and making it runnable outside the lab are the more immediate blockers to anyone else trying it. Then chart-editing behind a new risk gate. Each phase is its own blog post; the sandbox phase is KubeCon-CFP-scale work, not a milestone to bolt onto an existing session.
 
 ## Cost guardrails for the whole plan
 

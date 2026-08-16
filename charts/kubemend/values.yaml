@@ -1,0 +1,50 @@
+image:
+  repository: ghcr.io/m-stepkowski/kubemend
+  # Defaults to the chart's appVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  name: kubemend-reader
+  annotations: {}
+
+rbac:
+  # Namespace-scoped Role/RoleBinding by default. Set true for a
+  # ClusterRole/ClusterRoleBinding when the agent needs to act across more
+  # than one namespace — same rule list either way (charts/kubemend's
+  # _helpers.tpl defines it once so the two shapes can't diverge).
+  clusterScoped: false
+
+config:
+  # Merged over the in-cluster defaults (kubernetes.in_cluster: true) into
+  # the ConfigMap rendered as kubemend.yaml — anything here overrides the
+  # binary's own defaults exactly like a local kubemend.yaml file would.
+  overrides: {}
+
+job:
+  # Disabled by default: a plain `helm install` must never spawn an
+  # incident-response Job on its own. Triggering a run is a deliberate,
+  # separate action — see this chart's NOTES.txt for the exact command.
+  enabled: false
+  namespace: ""
+  app: ""
+  task: ""
+  window: "-30m"
+  model: main
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  # This chart is deliberately GitOps-backend-agnostic: it does not know how
+  # to clone your repo or hold your git credentials. The write path
+  # (kubemend/tools/gitops/*_backend.py) expects an already-cloned repo at
+  # /workspace, not a fresh one — provide that via a git-clone init
+  # container here (see charts/kubemend/README.md for a worked example).
+  # All three mount into the same /workspace emptyDir the main container
+  # uses.
+  extraInitContainers: []
+  extraVolumes: []
+  extraVolumeMounts: []
+  # LLM credentials (ANTHROPIC_API_KEY / OPENAI_API_KEY / AWS_*) are never
+  # baked into the image or this chart — supply them here, typically via
+  # secretKeyRef, same as any other Secret-backed env var.
+  env: []
+  envFrom: []

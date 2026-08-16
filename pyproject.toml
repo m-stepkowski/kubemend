@@ -71,9 +71,10 @@ testpaths = ["tests"]
 # files carry the UF_HIDDEN flag, and CPython 3.11+ skips hidden .pth files, so
 # an editable install can be silently inert.
 pythonpath = ["."]
-addopts = "-m 'not lab'"
+addopts = "-m 'not lab and not docker'"
 markers = [
     "lab: integration test requiring the kind lab cluster (task lab:up)",
     "integration: exercises a real external process or network endpoint",
     "slow: builds an artefact or otherwise takes seconds rather than milliseconds",
+    "docker: builds a real container image (needs a Docker daemon, network access, ~1-2 minutes)",
 ]

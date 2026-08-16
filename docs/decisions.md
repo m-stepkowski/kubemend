@@ -352,6 +352,68 @@ there.
   trade-off (harness-design.md) working as intended even against a
   smaller model's rougher edges, not just against Claude.
 
+## M8a — Packaging
+
+- **The scope grew substantially during planning, not implementation.** The
+  initial framing was "ship a Helm chart" — but a chart that only installs
+  RBAC and a `helm install`-time nothing has no obvious trigger, which is a
+  fair objection: what actually calls this on a cluster? Working through it
+  landed on splitting the work in two: M8a ships the access-control value
+  (narrow "create Job" RBAC beats a full reader kubeconfig on a human's
+  laptop) via a manual, human-triggered Job path; the alert-triggered
+  automation half moved to a separate, deferred M8b so it gets its own
+  review as the project's first component making an autonomous mutating
+  decision without a human in the loop.
+- **`evals/` is deliberately excluded from the wheel
+  (`[tool.hatch.build.targets.wheel] packages = ["kubemend"]`), but
+  `cli.py` unconditionally imported `evals.runner.evals_app` at module
+  load.** Every real install — the container image, and any future `pip
+  install kubemend` — crashed immediately with `ModuleNotFoundError: No
+  module named 'evals'`, on *every* invocation, not just the `evals`
+  subcommand. Found by actually running the built container image, not by
+  code review. The existing `test_packaging.py` docstring already
+  documented this exact blind spot from an earlier `prompts/` shadowing
+  regression, but the console-script test didn't catch the regression this
+  time either: it runs `python -c ...` with `cwd=REPO_ROOT`, and Python's
+  `-c` mode sets `sys.path[0]` to the current directory, silently making
+  `evals/` importable in the test even though it is absent from a real
+  install. Fixed by making the import conditional
+  (`try/except ModuleNotFoundError`). The recurring lesson: a test that
+  passes because of the *directory it happens to run from* is not testing
+  what a real install looks like — this is the second time this exact gap
+  has bitten the project (see the `prompts/` note below it in git blame),
+  and a durable fix would run the console-script test from a directory
+  that has neither `evals/` nor the repo root on `sys.path` at all, not
+  just patch this one import.
+- **`python:3.12-slim` has no `git` binary, and GitPython checks for it
+  eagerly at import time, not lazily.** Every `kubemend` invocation in the
+  first container build failed with `ImportError: Bad git executable`,
+  including ones that never touch a repository (e.g. `--help`). Fixed with
+  `apt-get install -y git` in the runtime stage. Another "only found by
+  actually running the image" bug, not something a `Dockerfile` review
+  would have caught without knowing GitPython's specific import-time
+  behavior.
+- **Sprig's `mergeOverwrite` (not plain YAML string concatenation) is
+  required in the chart's ConfigMap template** to deep-merge
+  `config.overrides` on top of the chart's own defaults
+  (`kubernetes.in_cluster: true`) without producing a YAML document with
+  duplicate top-level keys — verified empirically with `helm template`
+  rather than assumed from the Sprig docs, since a naive `toYaml`-twice
+  approach silently produces invalid/last-key-wins YAML instead of an
+  error.
+- **The Job template's GitOps checkout is a generic escape hatch
+  (`extraInitContainers`/`extraVolumes`/`extraVolumeMounts` sharing one
+  `workspace` `emptyDir`), not a gitea-specific init container.** The write
+  path (`kubemend/tools/gitops/*_backend.py`) expects an already-cloned
+  repo at a fixed path, not a fresh one — hardcoding gitea's clone command
+  into the chart would have made every non-lab GitOps backend (a real
+  GitHub/GitLab repo) a chart fork instead of a values override.
+- **`AnthropicBedrock`-style "widen an existing injection point" pattern
+  repeated itself here**: `KubeApiClient.in_cluster()` is a new alternate
+  constructor, not a change to `__init__`'s signature, mirroring the M7
+  decision to keep `AnthropicClient.__init__`'s `client=` override
+  single-purpose rather than growing a mode-selecting parameter.
+
 ## Cross-cutting lessons
 
 - **Every one of the recurring bugs above (`.pth` hiding, the notification

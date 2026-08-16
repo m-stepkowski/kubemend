@@ -1,0 +1,73 @@
+{{- if .Values.job.enabled }}
+{{- $namespace := required "job.namespace is required when job.enabled=true" .Values.job.namespace }}
+{{- $app := required "job.app is required when job.enabled=true" .Values.job.app }}
+{{- $task := required "job.task is required when job.enabled=true" .Values.job.task }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "kubemend.fullname" . }}-run-{{ now | unixEpoch }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubemend.labels" . | nindent 4 }}
+spec:
+  backoffLimit: {{ .Values.job.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.job.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "kubemend.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      restartPolicy: Never
+      {{- with .Values.job.extraInitContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: kubemend
+          image: {{ include "kubemend.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # KUBEMEND_BIN_DIR is already set by the image itself (Dockerfile)
+          # to where the pinned helm/kyverno/kubectl/argocd binaries live —
+          # nothing to set here for that.
+          args:
+            - run
+            - --task
+            - {{ $task | quote }}
+            - --namespace
+            - {{ $namespace | quote }}
+            - --app
+            - {{ $app | quote }}
+            - --window
+            - {{ .Values.job.window | quote }}
+            - --model
+            - {{ .Values.job.model | quote }}
+            - --config
+            - /etc/kubemend/kubemend.yaml
+          {{- with .Values.job.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.job.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/kubemend
+              readOnly: true
+            - name: workspace
+              mountPath: /workspace
+            {{- with .Values.job.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "kubemend.fullname" . }}-config
+        - name: workspace
+          emptyDir: {}
+        {{- with .Values.job.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}
