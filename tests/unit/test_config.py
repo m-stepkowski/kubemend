@@ -84,3 +84,65 @@ def test_keys_absent_from_the_file_fall_back_to_defaults(config_file: Path) -> N
     cfg = load_config(config_file)
 
     assert cfg.kubernetes.context == "kind-kubemend"
+
+
+def test_model_spec_provider_defaults_to_anthropic_for_backward_compat(
+    config_file: Path,
+) -> None:
+    """A pre-M7 kubemend.yaml with no `provider` key must keep behaving
+    exactly as it did before: Anthropic, no base_url, no aws_region, global
+    context window."""
+    cfg = load_config(config_file)
+
+    assert cfg.model.main.provider == "anthropic"
+    assert cfg.model.main.base_url is None
+    assert cfg.model.main.aws_region is None
+    assert cfg.model.main.window_tokens is None
+    assert cfg.model.cheap.provider == "anthropic"
+
+
+def test_model_spec_provider_fields_are_settable_from_the_file(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "kubemend.yaml"
+    target.write_text(
+        """\
+model:
+  main:
+    provider: bedrock
+    name: us.anthropic.claude-sonnet-5
+    aws_region: us-east-1
+  cheap:
+    provider: openai
+    name: deepseek-v4-flash
+    base_url: https://api.deepseek.com
+    window_tokens: 128000
+"""
+    )
+
+    cfg = load_config(target)
+
+    assert cfg.model.main.provider == "bedrock"
+    assert cfg.model.main.aws_region == "us-east-1"
+    assert cfg.model.cheap.provider == "openai"
+    assert cfg.model.cheap.base_url == "https://api.deepseek.com"
+    assert cfg.model.cheap.window_tokens == 128000
+
+
+def test_env_overrides_model_provider_and_base_url(
+    config_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real provider switch always sets NAME alongside provider/base_url —
+    ModelSpec.name has no field-level default, so an env-only override that
+    omits it can't construct the submodel (same as today for any other
+    required field). This mirrors how the override would actually be used."""
+    monkeypatch.setenv("KUBEMEND_MODEL__CHEAP__PROVIDER", "openai")
+    monkeypatch.setenv("KUBEMEND_MODEL__CHEAP__NAME", "deepseek-v4-flash")
+    monkeypatch.setenv("KUBEMEND_MODEL__CHEAP__BASE_URL", "https://api.deepseek.com")
+
+    cfg = load_config(config_file)
+
+    assert cfg.model.cheap.provider == "openai"
+    assert cfg.model.cheap.name == "deepseek-v4-flash"
+    assert cfg.model.cheap.base_url == "https://api.deepseek.com"
+    assert cfg.model.main.provider == "anthropic", "sibling tier must not be touched"

@@ -27,8 +27,21 @@ from pydantic_settings import (
 class ModelSpec(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
+    provider: Literal["anthropic", "openai", "bedrock"] = "anthropic"
     name: str
     max_cost_usd_per_run: float = 1.00
+    # openai provider only; None resolves to api.openai.com. Setting this is
+    # what turns "openai" into "OpenAI-compatible": DeepSeek, vLLM, Ollama,
+    # or anything else speaking the /v1/chat/completions dialect.
+    base_url: str | None = None
+    # bedrock provider only; None defers to the AWS env/profile chain.
+    aws_region: str | None = None
+    # None falls back to context.model_window_tokens. Per-model rather than
+    # global because window sizes vary a lot across providers (128k local
+    # models vs. 200k+ hosted) — see harness-design.md on why the denominator
+    # is configured, not auto-derived: a model swap must never silently
+    # change when compaction fires.
+    window_tokens: int | None = None
 
 
 class ModelConfig(BaseModel):
