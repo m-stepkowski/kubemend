@@ -36,6 +36,19 @@ class KubeApiClient:
         )
         self._dynamic = DynamicClient(api)
 
+    @classmethod
+    def in_cluster(cls) -> KubeApiClient:
+        """Alternate constructor for running as a Job/Pod (ARCHITECTURE.md §8).
+
+        In-cluster auth is defined entirely by the projected ServiceAccount
+        token Kubernetes mounts automatically — there is no "context" concept
+        to pass, unlike the kubeconfig-file path `__init__` covers.
+        """
+        k8s_config.load_incluster_config()
+        self = cls.__new__(cls)
+        self._dynamic = DynamicClient(k8s_client.ApiClient())
+        return self
+
     def _resource(self, kind: str) -> Resource:
         api_version, kube_kind = ALLOWED_KINDS[kind]
         try:

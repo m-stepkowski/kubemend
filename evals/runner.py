@@ -246,12 +246,10 @@ def render_report_json(report: SweepReport) -> str:
 
 
 def _build_lab(cfg: RunConfig) -> LabHandle:
-    from kubemend.tools.kubernetes.api import KubeApiClient
+    from kubemend.tools.kubernetes.factory import build_kube_client
     from kubemend.tools.observability.loki import LokiProvider
 
-    kube: KubeQuery = KubeApiClient(
-        cfg.kubernetes.kubeconfig, context=cfg.kubernetes.context or None
-    )
+    kube: KubeQuery = build_kube_client(cfg.kubernetes)
     loki: LogSearch = LokiProvider(cfg.observability.loki_url)
     return LabHandle(
         workspace=Path(cfg.gitops.repo_path).expanduser().resolve(),

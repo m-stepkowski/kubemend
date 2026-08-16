@@ -79,6 +79,10 @@ class ObservabilityConfig(BaseModel):
 class KubernetesConfig(BaseModel):
     kubeconfig: Path = Path("~/.kube/kubemend-lab-readonly")
     context: str = "kind-kubemend"
+    # True when running as a Job/Pod (M8a): auth comes from the projected
+    # ServiceAccount token Kubernetes mounts automatically, and kubeconfig/
+    # context are ignored entirely.
+    in_cluster: bool = False
 
 
 class GitOpsConfig(BaseModel):
@@ -126,6 +130,11 @@ class RunConfig(BaseSettings):
     kubernetes: KubernetesConfig = Field(default_factory=KubernetesConfig)
     gitops: GitOpsConfig = Field(default_factory=GitOpsConfig)
     argocd: ArgoCdConfig = Field(default_factory=ArgoCdConfig)
+    # The Kyverno policy pack the verification gate scans every proposal
+    # against (§5). Relative default matches a repo checkout's layout; a
+    # container image bakes its own copy in and overrides this via env, same
+    # as model.pricing_table.
+    policies_dir: Path = Path("policies")
 
 
 def load_config(path: Path | str = Path("kubemend.yaml")) -> RunConfig:

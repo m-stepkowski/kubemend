@@ -74,3 +74,8 @@ argocd:
   server: localhost:8080
   plaintext: true
   token_file: .lab/argocd-token
+
+# The Kyverno policy pack the verification gate scans every proposal against
+# (§5). The container image bakes its own copy in and overrides this via
+# KUBEMEND_POLICIES_DIR — see Dockerfile.
+policies_dir: policies
