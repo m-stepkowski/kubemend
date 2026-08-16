@@ -185,7 +185,7 @@ Full tree and rationale for each module: [`ARCHITECTURE.md §9`](ARCHITECTURE.md
 - [x] M4 — fault-injection scenarios + eval runner
 - [x] M5 — baseline benchmarks, threat model, v0.1 publish
 - [x] M6 — adversarial scenarios (scope traps, log-based prompt injection), v0.2 publish
-- [ ] M7 — multi-LLM-provider support (OpenAI-compatible, AWS Bedrock)
+- [x] M7 — multi-LLM-provider support (OpenAI-compatible, AWS Bedrock)
 
 Details and acceptance criteria per milestone: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
 
