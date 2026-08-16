@@ -16,21 +16,35 @@ import anthropic
 
 from kubemend.config import RunConfig
 from kubemend.core.model import ModelTier, ToolCall
-from kubemend.llm.client import LLMResponse, Message, Usage
+from kubemend.llm.client import (
+    SYSTEM_REMINDER,
+    LLMAuthError,
+    LLMError,
+    LLMResponse,
+    Message,
+    Usage,
+)
 
 MAX_TOKENS = 16_000
 
-# Context renders operator text as role="system". Mid-conversation system
-# messages are only supported on some models (not Sonnet), so anything that is
-# not part of the pinned prefix is delivered as a marked user turn instead —
-# the documented fallback, and it keeps the cached prefix byte-stable either way.
-SYSTEM_REMINDER = "<system-reminder>{text}</system-reminder>"
-
 
 class AnthropicClient:
-    def __init__(self, cfg: RunConfig, *, client: anthropic.Anthropic | None = None) -> None:
+    """Also serves Bedrock: `AnthropicBedrock` isn't a subclass of
+    `Anthropic` (different transport/auth, same `messages.create` surface),
+    so the factory constructs it and injects it here via `client=` rather
+    than this class knowing anything about Bedrock at all."""
+
+    def __init__(
+        self,
+        cfg: RunConfig,
+        *,
+        client: anthropic.Anthropic | anthropic.AnthropicBedrock | None = None,
+    ) -> None:
         self._cfg = cfg
-        self._client = client or anthropic.Anthropic()
+        try:
+            self._client = client or anthropic.Anthropic()
+        except anthropic.AnthropicError as exc:
+            raise LLMAuthError(str(exc)) from exc
 
     def _model_for(self, tier: ModelTier) -> str:
         return self._cfg.model.cheap.name if tier == "cheap" else self._cfg.model.main.name
@@ -59,7 +73,12 @@ class AnthropicClient:
                 for t in tools
             ]
 
-        response = self._client.messages.create(**request)
+        try:
+            response = self._client.messages.create(**request)
+        except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as exc:
+            raise LLMAuthError(str(exc)) from exc
+        except anthropic.AnthropicError as exc:
+            raise LLMError(str(exc)) from exc
 
         calls = [
             ToolCall(id=block.id, name=block.name, arguments=dict(block.input))
