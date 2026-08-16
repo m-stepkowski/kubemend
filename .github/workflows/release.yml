@@ -32,3 +32,114 @@ jobs:
           # Auto-generated from merged PRs since the previous tag (or since
           # the repo's start, for the first release).
           generate_release_notes: true
+
+  # -- M8a: multi-arch container image, published to ghcr.io ------------------
+  #
+  # Native arm64 + amd64 runners (ubuntu-24.04-arm is free and unlimited on
+  # public repos as of 2025) rather than QEMU emulation — each leg builds and
+  # pushes its own single-arch image by digest, and merge-manifest below
+  # combines the two digests into one multi-arch manifest under the release
+  # tag. Splitting it this way is the documented way to avoid QEMU: a single
+  # buildx invocation targeting both platforms on one runner would emulate
+  # whichever platform isn't native to that runner.
+  build-container:
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runs-on: ubuntu-24.04
+            digest-name: amd64
+          - platform: linux/arm64
+            runs-on: ubuntu-24.04-arm
+            digest-name: arm64
+    runs-on: ${{ matrix.runs-on }}
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          platforms: ${{ matrix.platform }}
+          push: true
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true
+
+      - name: Export digest for the merge job
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.digest-name }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-manifest:
+    needs: build-container
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create the multi-arch manifest and push it
+        working-directory: /tmp/digests
+        run: |
+          set -eu
+          IMAGE=ghcr.io/${{ github.repository }}
+          TAG=${{ inputs.tag || github.ref_name }}
+          refs=()
+          for digest in *; do
+            refs+=("$IMAGE@sha256:$digest")
+          done
+          docker buildx imagetools create -t "$IMAGE:$TAG" -t "$IMAGE:latest" "${refs[@]}"
+
+  # -- M8a: PyPI publish --------------------------------------------------
+  #
+  # Trusted publishing (OIDC, no stored secret) — requires a one-time,
+  # manual registration on PyPI's own site first: pypi.org project settings
+  # -> "Add a new pending publisher" -> this repo, this workflow filename,
+  # environment left blank unless one is added below. Until that's done,
+  # this job will fail at the publish step with an authorization error;
+  # the build step itself has no such dependency and always works.
+  publish-pypi:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
