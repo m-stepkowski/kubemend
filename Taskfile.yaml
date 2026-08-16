@@ -655,7 +655,7 @@ tasks:
         # runs; `git branch --list | tail -1` picked whichever sorted last,
         # not this run's — parse the run_id straight from the CLI's own
         # printed trace path instead, which is unambiguous.
-        run_id=$(echo "$RUN_OUTPUT" | grep -o 'traces/[a-z0-9]*\.jsonl' | sed 's#traces/##; s#\.jsonl##')
+        run_id=$(echo "$RUN_OUTPUT" | grep -o 'traces/[A-Za-z0-9_-]*\.jsonl' | sed 's#traces/##; s#\.jsonl##')
         branch="kubemend/${run_id:-unknown}"
         echo ""
         echo "== done. proposal branch: $branch in $WS =="

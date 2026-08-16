@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import textwrap
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -232,7 +233,9 @@ def run(
         raise typer.Exit(code=2) from exc
     scope = Scope(namespace=namespace, app=app_name)
     incident = Task(statement=task, scope=scope, window=window)
-    run_id = uuid.uuid4().hex[:12]
+    # Timestamp prefix makes traces/ and `kubemend/<run_id>` branches sortable
+    # and identifiable at a glance; the hex suffix keeps same-second runs unique.
+    run_id = f"{datetime.now(UTC):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
 
     workspace = Path(cfg.gitops.repo_path).expanduser()
     effective_read_only = read_only
