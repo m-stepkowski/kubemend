@@ -119,7 +119,7 @@ tasks:
         done
 
   chart:lint:
-    desc: Lint and render the kubemend Helm chart (default, cluster-scoped, and job-enabled values)
+    desc: Lint and render the kubemend Helm chart (default, cluster-scoped, job-enabled, and operator-enabled values)
     deps: [tool:helm]
     cmds:
       - '{{.LAB_BIN}}/helm lint charts/kubemend'
@@ -129,6 +129,12 @@ tasks:
         {{.LAB_BIN}}/helm template charts/kubemend \
           --set job.enabled=true --set job.namespace=shop --set job.app=shop-api \
           --set 'job.task=test incident' > /dev/null
+      - |
+        {{.LAB_BIN}}/helm template charts/kubemend \
+          --set operator.enabled=true --set operator.webhookToken=lint-only-token > /dev/null
+      - |
+        {{.LAB_BIN}}/helm template charts/kubemend --set operator.enabled=true > /dev/null 2>&1 \
+          && { echo "operator.webhookToken should be required but wasn't" >&2; exit 1; } || true
 
   fmt:
     desc: Apply ruff formatting and safe autofixes

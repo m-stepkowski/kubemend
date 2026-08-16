@@ -2,16 +2,19 @@
 
 Installs the read-only ServiceAccount/RBAC kubemend needs to run in-cluster,
 plus a `kubemend.yaml` ConfigMap and a gated `Job` template for triggering
-one incident-response run.
+one incident-response run. Optionally also installs the M8b operator — a
+small HTTP service that receives Alertmanager webhooks and creates that same
+kind of Job on its own, without a human running the command below by hand.
 
 ## Why a chart at all
 
-The value here is access control, not automation (that's a separate,
-alert-triggered operator — not part of this chart). Without this, running
-`kubemend` means the operator's own machine needs a kubeconfig with the full
-read-only RBAC this chart installs. With it, an on-call engineer only needs
-permission to *create a Job* in one namespace — a much narrower grant — while
-the Job itself runs with its own tightly-scoped in-cluster ServiceAccount.
+The value here is access control, not automation by default. Without this,
+running `kubemend` means the operator's own machine needs a kubeconfig with
+the full read-only RBAC this chart installs. With it, an on-call engineer
+only needs permission to *create a Job* in one namespace — a much narrower
+grant — while the Job itself runs with its own tightly-scoped in-cluster
+ServiceAccount. Automation is opt-in and separate: see "Alert-triggered
+operator (M8b)" below.
 
 ## Install
 
@@ -86,6 +89,30 @@ job:
           key: anthropic-api-key
 ```
 
+## Alert-triggered operator (M8b)
+
+```bash
+helm upgrade kubemend charts/kubemend -n kubemend-system \
+  --set operator.enabled=true \
+  --set operator.webhookToken="$(openssl rand -hex 32)"
+```
+
+This deploys a `Deployment` + `Service` running `kubemend operator serve` —
+a stdlib `http.server`, no framework — with its own ServiceAccount and RBAC
+(`create`/`get`/`list` on `jobs` only, always namespace-scoped to the release
+namespace, a distinct and narrower identity than the reader SA). It shells
+out to `helm template` + `kubectl create` internally to spawn Jobs, reusing
+this same chart's `job.yaml` and every `job.*` value set above (GitOps
+checkout, LLM credentials) — nothing to configure twice.
+
+Point your Alertmanager at `http://<service>.<namespace>.svc:8080/webhook`
+with `Authorization: Bearer <operator.webhookToken>`. Every request is
+checked against that token before any other logic runs; a second alert for
+the same `(namespace, app)` within `operator.cooldownSeconds` (default 300)
+creates no second Job. Read `docs/threat-model.md` §11 before enabling this
+in a real cluster — this is the project's first component that creates a
+Job without a human in the loop.
+
 ## Values
 
 | Key | Default | Meaning |
@@ -98,3 +125,8 @@ job:
 | `job.enabled` | `false` | Gate — a plain `helm install` never spawns a Job |
 | `job.namespace` / `job.app` / `job.task` | `""` | Required when `job.enabled=true` — same meaning as `kubemend run`'s flags |
 | `job.extraInitContainers` / `extraVolumes` / `extraVolumeMounts` | `[]` | How you wire in a GitOps repo checkout (see above) |
+| `operator.enabled` | `false` | Gate — deploys the webhook receiver + its own ServiceAccount/RBAC |
+| `operator.webhookToken` | `""` | Required when `operator.enabled=true`; render fails without it |
+| `operator.cooldownSeconds` | `300` | Minimum seconds between two triggered Jobs for the same `(namespace, app)` |
+| `operator.port` | `8080` | Port the webhook `Service`/`Deployment` listen on |
+| `operator.env` / `envFrom` | `[]` | Extra env on the operator process itself (not the Jobs it spawns — use `job.env`/`envFrom` for those) |

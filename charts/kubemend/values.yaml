@@ -48,3 +48,28 @@ job:
   # secretKeyRef, same as any other Secret-backed env var.
   env: []
   envFrom: []
+
+operator:
+  # Disabled by default, like job.enabled — an alert-triggered Deployment is
+  # a bigger step than a plain `helm install`. See charts/kubemend/README.md
+  # and docs/threat-model.md §11 before enabling this in a real cluster.
+  enabled: false
+  serviceAccount:
+    # A distinct identity from serviceAccount.name (the reader) — the
+    # operator's RBAC is create/get/list on jobs only, nothing else, and
+    # always namespace-scoped to the release namespace (the Job it creates
+    # always runs there too, regardless of which namespace the incident it
+    # investigates targets).
+    name: kubemend-operator
+  port: 8080
+  cooldownSeconds: 300
+  # Required when operator.enabled=true — a shared-secret bearer token the
+  # webhook checks before any other logic runs. Generate one yourself
+  # (e.g. `openssl rand -hex 32`); this chart never generates secrets.
+  webhookToken: ""
+  resources: {}
+  # Extra env/envFrom on the operator container itself — same escape hatch
+  # as job.env/envFrom, but note this is the operator process's own env, not
+  # the incident Jobs it spawns (those get job.env/envFrom above).
+  env: []
+  envFrom: []

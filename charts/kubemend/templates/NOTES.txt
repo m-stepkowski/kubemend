@@ -26,3 +26,13 @@ Watch it:
 
 This chart does not manage your GitOps repo checkout or credentials — see
 charts/kubemend/README.md for how to wire those in via job.extraInitContainers.
+{{- if .Values.operator.enabled }}
+
+The operator ({{ include "kubemend.fullname" . }}-operator) is also running,
+listening on port {{ .Values.operator.port }} for Alertmanager webhooks and
+creating Jobs on its own — see docs/threat-model.md §11.
+{{- else }}
+
+The alert-triggered operator is not enabled — see charts/kubemend/README.md's
+"Alert-triggered operator (M8b)" section to turn it on.
+{{- end }}
