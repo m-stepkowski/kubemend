@@ -45,6 +45,36 @@ task ──▶ Loop ──▶ tool calls ──▶ Prometheus / Loki / K8s (read
 
 Full design, invariants, and every numeric default with its rationale: **[`ARCHITECTURE.md`](ARCHITECTURE.md)**.
 
+## Model providers
+
+`main` and `cheap` are each configured independently, so mixing providers
+across tiers (e.g. Claude on Bedrock for `main`, DeepSeek for `cheap`) is a
+normal configuration, not a special case:
+
+| Provider | `model.*.provider` | Covers | Credentials |
+|---|---|---|---|
+| Anthropic | `anthropic` (default) | Claude, direct API | `ANTHROPIC_API_KEY`, or an `ant auth login` profile |
+| OpenAI-compatible | `openai` + `base_url` | OpenAI, DeepSeek, vLLM, Ollama, anything speaking `/v1/chat/completions` | `OPENAI_API_KEY` (local/self-hosted endpoints without auth fall back to a placeholder automatically) |
+| AWS Bedrock | `bedrock` | Claude models only, via Bedrock (Converse API / non-Claude models not yet supported) | the standard AWS credential chain (env, profile, or IMDS) |
+
+```yaml
+model:
+  main:
+    provider: bedrock
+    name: us.anthropic.claude-sonnet-5-v1:0
+    aws_region: us-east-1
+  cheap:
+    provider: openai
+    name: deepseek-v4-flash
+    base_url: https://api.deepseek.com
+```
+
+See `kubemend.yaml`'s own comments for more examples, and
+[`config/pricing.yaml`](config/pricing.yaml) for cost-guardrail pricing —
+non-Anthropic entries there are placeholders sourced from public pricing
+pages, not verified against an invoice; check before trusting them for a
+committed baseline.
+
 ## Quickstart
 
 Requires [Docker](https://docs.docker.com/get-docker/) (or Rancher Desktop —
@@ -155,6 +185,7 @@ Full tree and rationale for each module: [`ARCHITECTURE.md §9`](ARCHITECTURE.md
 - [x] M4 — fault-injection scenarios + eval runner
 - [x] M5 — baseline benchmarks, threat model, v0.1 publish
 - [x] M6 — adversarial scenarios (scope traps, log-based prompt injection), v0.2 publish
+- [ ] M7 — multi-LLM-provider support (OpenAI-compatible, AWS Bedrock)
 
 Details and acceptance criteria per milestone: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
 
