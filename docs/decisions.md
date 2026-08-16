@@ -233,6 +233,125 @@ there.
   cleanup step's precondition was actually reached, is the only version that
   is correct under early exit.
 
+## M7 — Multi-LLM-provider support
+
+- **Tool results already render as plain text, not native provider blocks —
+  this made cross-provider support far cheaper than expected.**
+  `core/context.py`'s `Exchange.render()` turns every tool call/result pair
+  into two `Message` objects (`tool_call ...(...)`, `tool_result ...: ...`);
+  `ToolCall.id` is traced but never sent back to any provider. No client
+  needs `tool_use_id`/`tool_call_id` pairing, and OpenAI's strict
+  tool-call/tool-result pairing validation never comes into play. Adding
+  OpenAI-compatible support was a schema-translation and message-shaping
+  exercise, not a rethink of the conversation model.
+- **`anthropic.AnthropicBedrock` is not a subclass of `anthropic.Anthropic`**
+  (`AnthropicBedrock.__mro__` confirms it — different transport/auth, same
+  `messages.create` surface). `AnthropicClient` already accepted a `client=`
+  override for tests; widening that parameter's type to a union was enough
+  to serve Bedrock with zero new client code — the factory constructs
+  `AnthropicBedrock` and injects it, `AnthropicClient` never knows Bedrock
+  exists.
+- **A pydantic-settings env-only override can fail if a required field has
+  no field-level default.** `ModelSpec.name: str` has no default (only the
+  *outer* `ModelConfig.cheap` field-assignment provides one, as a whole
+  instance). Setting only `KUBEMEND_MODEL__CHEAP__PROVIDER` via env, without
+  also setting `..._NAME`, fails construction — env-source dicts don't
+  merge with a sibling field's class-level default at that nesting level.
+  Not a new bug (the same would happen today overriding just
+  `max_cost_usd_per_run` alone), but M7 is the first place a real
+  provider-switch workflow made it observable. Any real provider switch via
+  env vars must set `NAME` alongside whatever else it overrides.
+- **`loop.py`'s ~150-line ceiling (hard rule 7) held, but only just.** The
+  `LLMError` catch + `_fatal_error` path initially pushed the file to 160
+  lines; factoring `_handoff` and `_fatal_error`'s shared "build a failed
+  `RunResult` + trace it" logic into one `_finish` helper cut real
+  duplication and brought it to 146 before the window-override and
+  `MeteredLLM` wiring landed — both nets were checked against the ceiling
+  before committing, not after.
+- **The `openai` SDK in this environment depends on `httpx2`** (the httpx
+  2.x line, published under that package name during its rollout), not the
+  `httpx` 0.x this repo uses elsewhere for Prometheus/Loki. Genuinely two
+  different packages installed side by side — surprising enough to be worth
+  a comment at the one test file that has to know (`test_llm_conformance.py`'s
+  wire-format test, which mocks `httpx2.Client`).
+- **Writing the per-model-window test surfaced two real gotchas in
+  `Context.compact()` and `ToolRegistry`, not bugs in the new code.**
+  `compact()` no-ops below 3 exchanges regardless of rendered size — 2 are
+  always kept, so `to_evict` stays 0 until a 3rd exists — a single
+  giant-payload exchange never triggers a real compaction call no matter
+  how far over threshold it pushes `should_compact()`. Separately,
+  `ToolRegistry`'s own `result_token_cap` (default 6,000) is independent of
+  `ContextConfig.result_token_cap` — a test that only raises the latter
+  still gets its payload truncated to ~6k tokens before `Context` ever sees
+  it. Both are pre-existing, correct behavior; they just made a
+  synthetic-payload test fail confusingly (wrong reason) before the actual
+  window-override wiring was confirmed working via `git stash` on
+  `loop.py`.
+- **Cost figures from before this milestone undercount cheap-tier
+  spend.** `MeteredLLM` fixed a real bug: `loop.py` previously priced and
+  traced only its own main-tier call, so `Context.compact()` and
+  `core/handoff.request_handoff()` calls (always cheap-tier) were either
+  priced at the *main* model's rate or not charged to the budget at all.
+  Every M4–M6 baseline number reported before this lands is a genuine
+  undercount relative to reports produced after — not a regression when the
+  next baseline's total looks higher.
+- **Pricing entries for non-Anthropic models are explicitly marked
+  unverified** (`config/pricing.yaml`, sourced from public pricing pages at
+  M7 time, not an invoice) — provider list prices change without notice,
+  and this table does not update itself. Check against a real bill before
+  trusting these for a committed baseline, same discipline as the original
+  Anthropic entries.
+- **`litellm` (and every other multi-provider abstraction library) stayed
+  out**, consistent with hard rule 1: three provider clients (~350 lines
+  combined) is genuinely smaller and more auditable than adopting a
+  dependency whose whole job is to sit exactly where this project's
+  hand-written-harness claim lives.
+- **A reasoning-tier OpenAI model rejects tool calls unless
+  `reasoning_effort: "none"` is set — and setting that param on a
+  non-reasoning model is itself a 400.** Found by actually running the
+  acceptance sweep against a real OpenAI account, not by reading the API
+  docs: `gpt-5.6-luna` (the cheap-tier flagship at M7 time) returned "Function
+  tools with reasoning_effort are not supported... set reasoning_effort to
+  'none'" the first time a tool schema was attached, while `gpt-4.1-mini`
+  rejects the same param outright as an unrecognized argument. No reliable,
+  future-proof way to tell which kind a given model string is without a
+  hardcoded list that goes stale the next time OpenAI ships a model —
+  `openai_client.py` deliberately does not guess, and documents the gap
+  next to the code. The acceptance sweep itself ran on `gpt-4.1-mini`
+  (proven working with tools) rather than the reasoning-tier model this
+  milestone's docs originally used as the illustrative example.
+- **The all-9-scenarios acceptance canary's low pass rate (1/9) was almost
+  entirely two pre-existing, provider-independent lab issues, not the new
+  OpenAI client.** First, a stale `.lab/argocd-token` (the lab cluster had
+  been up ~2 days) made every gate verdict fail with `"invalid session:
+  Token is expired"` regardless of what was proposed — the model's actual
+  fixes were correct, and the "loop_detected" terminations were it
+  correctly retrying against a gate that could never pass. Second,
+  `evals/lab.py:reset()` force-pushes the git revert and returns
+  immediately without polling for Argo to actually converge, so running
+  all 9 scenarios back-to-back (rather than in the smaller batches every
+  prior sweep this project has run used) hit a transient quota race
+  (`used: pods=4, limited: pods=4`) as one scenario's rollout was still
+  settling when the next one's fault landed. Re-running individual
+  scenarios after regenerating the token (`rm .lab/argocd-token && task
+  lab:argocd-token`) passed cleanly on the first try — the actual M7
+  provider-layer code was correct the whole time; neither issue is new in
+  M7 or specific to it. Filed as follow-ups, not fixed under this
+  milestone's scope: a token-freshness check/re-auth in the lab tooling,
+  and a converge-before-next-scenario wait in `reset()`.
+- **A genuine, model-specific finding, separate from both of the above**:
+  `gpt-4.1-mini`'s first two `propose_git_change` attempts on
+  `bad-image-tag` contained corrupted control-byte characters embedded in
+  the JSON-encoded file content (`invalid_yaml` errors citing literal
+  `#x0000`/`#x001e` bytes at a fixed position) — a generation artifact from
+  asking a smaller model to reproduce a large text blob verbatim inside a
+  function-call argument, not a schema or harness bug. The model correctly
+  diagnosed the corruption from the validator's own error message and
+  self-corrected on the third attempt, within budget — real evidence for
+  the "verification failures re-enter verbatim and structured"
+  trade-off (harness-design.md) working as intended even against a
+  smaller model's rougher edges, not just against Claude.
+
 ## Cross-cutting lessons
 
 - **Every one of the recurring bugs above (`.pth` hiding, the notification

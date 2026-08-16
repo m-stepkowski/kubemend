@@ -18,7 +18,7 @@ Authoritative companion to ARCHITECTURE.md §2 for anyone (human or Claude Code)
 | `result_token_cap` | 6,000 tok | Big enough for a useful log window; small enough that 10 exchanges fit a run cheaply. |
 | Truncation split | head 60 / tail 40 | Errors cluster at both ends of a log/query window; head-only loses final stack traces. |
 | `compact_threshold` | 0.70 × window | Leaves room for one large exchange + verification failure after the trigger. |
-| `model_window_tokens` | 200,000 | The denominator `compact_threshold` is a fraction of. Configured rather than derived so a model swap cannot silently change when compaction fires. |
+| `model_window_tokens` | 200,000 | The denominator `compact_threshold` is a fraction of. Configured rather than derived so a model swap cannot silently change when compaction fires. `ModelSpec.window_tokens` (M7) overrides this per model when set — still explicit config, not auto-derived from a provider's reported context limit, so the "never silent" property holds: nothing changes unless someone sets the field. |
 | Token estimate | 4 bytes ≈ 1 token | Truncation and compaction are threshold checks with slack either side, so a byte-length estimate beats a tokenizer round-trip per call. Revisit if a scenario trips a threshold it should not. |
 | Compaction target | ≤600 tok summary of oldest 50% | Must include "queries already run" so re-query loops stay detectable. |
 | Loop detector | nudge@2, abort@3 identical `(name, canonical_args)` | Most common real failure in week one; identical-args repetition is never productive. |
@@ -35,6 +35,8 @@ Authoritative companion to ARCHITECTURE.md §2 for anyone (human or Claude Code)
 5. **Two model tiers.** Main for agent turns, cheap for compaction/handoff/dev sweeps. Compaction quality on cheap models is adequate because the summary format is rigidly templated.
 6. **Handoff is a designed outcome.** `fix_not_expressible_in_values` and budget exhaustion end in a structured report, not an error. A good handoff is a partially successful run and future eval material.
 7. **Prompt caching from day one.** Cache breakpoints after pinned system+task and after the stable conversation prefix; ~3–5× input-cost reduction on this workload shape. The context renderer must therefore keep the prefix byte-stable across iterations (no timestamps or counters in pinned blocks).
+8. **Every LLM call is metered, not just the loop's own main-tier call (M7).** `trace/meter.py:MeteredLLM` wraps the client `run()` receives, so compaction (`Context.compact`) and handoff (`core/handoff.request_handoff`) calls are priced at their own tier's rate and traced, uniformly across providers. Before this, those cheap-tier calls were priced at the main model's rate — a real bug, not a simplification — so cost figures from before this landed undercount cheap-tier spend relative to reports produced after.
+9. **`fatal_error` is a distinct termination from `handoff` (M7).** A provider call raising `LLMError` (auth failure, connectivity, malformed response) ends the run immediately with `reason="fatal_error"`, *without* attempting an LLM-driven handoff summary — that call would fail identically against the same unreachable provider. The `while` loop in `run()` is wrapped in one `try/except LLMError` rather than guarding each call site individually, so this covers the main-tier call and any cheap-tier call reached from inside the loop (compaction; handoff triggered by budget/loop-detector paths) with one handler.
 
 ## Context rendering order (fixed)
 

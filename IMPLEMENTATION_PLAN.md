@@ -118,10 +118,40 @@ Accept: all three pass ≥ 9/10 on main model; injection scenario documented in 
 
 ---
 
-## After v0.1 — the road you already chose
+## M7 — Multi-LLM-provider support (1 session)
 
-M7 sketch (not planned in detail here): sandbox execution substrate — replace direct executor calls with per-run isolated execution (this is where the Option A platform work begins, agent-sandbox + Kyverno pack, Go controllers), then Dynatrace provider as the second `ObservabilityProvider`, then chart-editing behind a risk gate, then alert-triggered runs. Each is a blog post; the sandbox phase is a KubeCon CFP.
+**Goal:** open the tool to models beyond Anthropic — the harness is a hand-written client abstraction (`llm/client.py`), not a wrapper around one vendor's API by accident.
+
+Scope: `llm/factory.py:make_client(cfg)` dispatches on a new per-tier `ModelSpec.provider` (`anthropic | openai | bedrock`); `OpenAICompatibleClient` covers OpenAI, DeepSeek, vLLM, Ollama (anything speaking `/v1/chat/completions`, selected via `base_url`); Bedrock reuses `AnthropicClient` with an injected `AnthropicBedrock` SDK client (Claude models only — the Converse API for non-Claude Bedrock models is out of scope). `LLMError`/`LLMAuthError` replace provider-SDK exceptions at the `cli.py`/`evals/runner.py` boundary. `trace/meter.py:MeteredLLM` fixes a real bug found while building this: cheap-tier compaction/handoff calls were priced at the main model's rate (or not charged at all) — now every call is metered at its own tier's configured price. Per-model `window_tokens` drives the compaction threshold. New deps: `openai`, `anthropic[bedrock]` — no agent-framework abstraction (litellm rejected, per hard rule 1).
+
+Accept: full unit + conformance-test suite green, including a byte-identical-request regression test proving the Anthropic-only path is unchanged; a cheap-tier sweep (n=1–3, all 9 scenarios) against a real OpenAI-compatible provider (DeepSeek) completes every scenario without a harness crash; one manual smoke run each against Bedrock and a local OpenAI-compatible endpoint, recorded in the PR. A committed main-model baseline for a new provider is a separate, explicitly budgeted decision — not part of this milestone's acceptance bar.
+
+---
+
+## M8 — Packaging & deployment (1–2 sessions)
+
+**Goal:** kubemend runs somewhere other than the author's laptop.
+
+Scope: multi-arch (amd64+arm64) container image baking the Taskfile-pinned `helm`/`kyverno`/`kubectl` binaries (never system PATH versions, same discipline as the lab); publish to ghcr.io on release tags by extending the existing `.github/workflows/release.yml`; a Helm chart for in-cluster runs (Job-per-incident pattern, read-only ServiceAccount reusing `lab/bootstrap/rbac.yaml`'s rules, values for config/env/secret refs); in-cluster kubeconfig support in `KubeApiClient` (currently `Path`-only — needs `load_incluster_config`); PyPI publish (decide whether to widen `requires-python = ">=3.12,<3.13"` first; consider an extras split, e.g. `kubemend[bedrock]`, so the base install doesn't pull `boto3`).
+
+Accept: `helm install` + one Job completes a real incident from inside the lab cluster; `pip install kubemend` followed by the README quickstart works on a clean machine; the image builds reproducibly for both architectures in CI.
+
+---
+
+## M9 — Datadog observability provider (1–2 sessions)
+
+**Goal:** a second `ObservabilityProvider` proves the tool layer is genuinely provider-shaped, not Prometheus/Loki-shaped by accident.
+
+Scope: `DatadogProvider` on raw httpx, no vendor SDK (`DD-API-KEY`/`DD-APPLICATION-KEY` read from token files, mirroring `GitOpsConfig`'s `*_token_file` idiom); Datadog's v2 `/api/v2/query/timeseries` and `/api/v2/logs/events/search` endpoints; **provider-specific tool schemas** — Datadog's own query syntax, not the `promql`/`logql` argument names (schemas are contracts per `docs/knowledge/tool-contracts.md`, updated in the same PR); dispatch on `ObservabilityConfig.provider`, which today is a `Literal` nobody reads; extract the provider-wiring currently inline in `cli.py:build_read_only_registry` into a factory; abstract the eval harness's `evals/lab.py:_log_contains` LogQL coupling behind a provider-neutral symptom-probe interface; add the schema-vs-doc contract test that doesn't exist yet for either provider.
+
+Accept: unit suite green including new contract tests for both providers; the existing 9-scenario suite still passes unmodified on `prometheus_loki`; the Datadog path is validated by contract tests plus one manual run against a real Datadog org (no lab-cluster Datadog instance).
+
+---
+
+## M10 — Sandbox execution substrate (multi-session; not planned in detail here)
+
+Per-run isolated tool execution replacing direct executor calls (the Option A platform work: agent-sandbox + a Kyverno pack, Go controllers) — deferred behind M7–M9 rather than first, since opening the tool to more models and making it runnable outside the lab are the more immediate blockers to anyone else trying it. Then chart-editing behind a new risk gate, then alert-triggered runs. Each phase is its own blog post; the sandbox phase is KubeCon-CFP-scale work, not a milestone to bolt onto an existing session.
 
 ## Cost guardrails for the whole plan
 
-Dev iteration on cheap model; `max_cost_usd_per_run: 1.00` hard cap from M1; sweeps: cheap for regression, main only for committed baselines (M5/M6). Expected total to v0.1: ~$50–120 (per the earlier estimate; your traces will correct it after week one — check `trace/cost.py` numbers against the invoice once).
+Dev iteration on cheap model; `max_cost_usd_per_run: 1.00` hard cap from M1; sweeps: cheap for regression, main only for committed baselines (M5/M6, and any future provider's first committed number). Expected total to v0.1: ~$50–120 (per the earlier estimate; your traces will correct it after week one — check `trace/cost.py` numbers against the invoice once). M7 onward: non-Anthropic pricing entries in `config/pricing.yaml` are unverified placeholders — check against a real invoice before trusting them for a committed baseline.

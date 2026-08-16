@@ -15,15 +15,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
-import anthropic
 import typer
 
 from evals.runner import evals_app
 from kubemend.config import RunConfig, load_config
 from kubemend.core.loop import run as run_loop
 from kubemend.core.model import RunResult, Scope, Task, Verdict
-from kubemend.llm.anthropic_client import AnthropicClient
-from kubemend.llm.client import LLMClient
+from kubemend.llm.client import LLMClient, LLMError
+from kubemend.llm.factory import make_client
 from kubemend.prompts import render
 from kubemend.tools.gitops.backend import GitBackend
 from kubemend.tools.gitops.gitea_backend import GiteaBackend
@@ -206,6 +205,18 @@ def resolve_model_tier(cfg: RunConfig, model: str) -> RunConfig:
     return cfg
 
 
+def _credential_hint(cfg: RunConfig) -> str:
+    """Which env var (or AWS chain) applies depends on which provider each
+    tier is actually configured for — no single hint fits every setup."""
+    hints = {
+        "anthropic": "ANTHROPIC_API_KEY, or `ant auth login` to store a profile",
+        "openai": "OPENAI_API_KEY (or the key your OpenAI-compatible endpoint expects)",
+        "bedrock": "the AWS credential chain (env vars, profile, or IMDS)",
+    }
+    providers = {cfg.model.main.provider, cfg.model.cheap.provider}
+    return "Check: " + "; ".join(hints[p] for p in sorted(providers))
+
+
 @app.command()
 def run(
     task: Annotated[
@@ -251,19 +262,14 @@ def run(
         )
         effective_read_only = True
 
-    # Deliberately no ANTHROPIC_API_KEY precondition. The SDK resolves
-    # credentials from several sources in order — the env var, an
-    # ANTHROPIC_AUTH_TOKEN, or an `ant auth login` profile on disk — so an unset
-    # env var does not mean the user has no credentials. Let the SDK decide and
-    # translate its refusal into something actionable.
+    # Deliberately no API-key precondition here. Each provider's SDK resolves
+    # its own credentials (env var, profile on disk, or the AWS chain for
+    # Bedrock), so an unset env var does not mean there are no credentials.
+    # Let the SDK decide and translate its refusal into something actionable.
     try:
-        llm = AnthropicClient(cfg)
-    except anthropic.AnthropicError as exc:
-        typer.echo(
-            f"could not authenticate to the Anthropic API: {exc}\n"
-            "Set ANTHROPIC_API_KEY, or run `ant auth login` to store a profile.",
-            err=True,
-        )
+        llm = make_client(cfg)
+    except LLMError as exc:
+        typer.echo(f"could not construct an LLM client: {exc}\n{_credential_hint(cfg)}", err=True)
         raise typer.Exit(code=1) from exc
 
     result = execute_incident(

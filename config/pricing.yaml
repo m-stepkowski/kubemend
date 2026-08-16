@@ -25,3 +25,60 @@ models:
     output: 5.00
     cache_write_5m: 1.25
     cache_read: 0.10
+
+  # -- M7: non-Anthropic providers ------------------------------------------
+  # UNVERIFIED (placeholder, added M7) — check against a real invoice before
+  # trusting these for a committed baseline. Sourced from public pricing
+  # pages at the time this milestone landed; provider pricing changes
+  # without notice, and these entries will not update themselves.
+
+  # DeepSeek's own API is OpenAI-compatible; cache reads are automatic and
+  # billed near-free (no separate cache_write charge to model).
+  deepseek-v4-flash:
+    input: 0.14
+    output: 0.28
+    cache_read: 0.0028
+
+  deepseek-v4-pro:
+    input: 0.435
+    output: 0.87
+    cache_read: 0.003625
+
+  # OpenAI's flagship at M7 time; a cost-sensitive tier also exists
+  # (substantially cheaper) — add its entry here once you know which
+  # OPENAI_MODEL string you're actually pointing `cheap` at.
+  gpt-5.5:
+    input: 5.00
+    output: 30.00
+    cache_read: 0.50
+
+  # Non-reasoning model — used for the M7 acceptance sweep specifically
+  # because gpt-5.6-luna (the reasoning-tier cheap model) rejects tool
+  # calls on this endpoint unless reasoning_effort=none is set, which this
+  # client does not do automatically (see openai_client.py, decisions.md).
+  gpt-4.1-mini:
+    input: 0.40
+    output: 1.60
+    cache_read: 0.20
+
+  # Bedrock model IDs are region/version-stamped strings (e.g.
+  # "us.anthropic.claude-sonnet-5-v1:0") — copy the exact ID from your AWS
+  # console into `model.*.name`, then key an entry here with that same
+  # string. Bedrock's Claude pricing has historically matched Anthropic's
+  # direct API rates; not independently re-verified for this table.
+  "us.anthropic.claude-sonnet-5-v1:0":
+    input: 3.00
+    output: 15.00
+    cache_write_5m: 3.75
+    cache_read: 0.30
+
+  # A fully local model (Ollama, vLLM) has no API cost at all — an explicit
+  # all-zero entry is honored by load_pricing (only a *missing* key falls
+  # back to FALLBACK_PRICE), which is what you want: real $0, not an
+  # inflated guess. This deliberately disables the cost guardrail for that
+  # model; max_iterations/max_wall_seconds still bound the run.
+  local-model-example:
+    input: 0.0
+    output: 0.0
+    cache_write_5m: 0.0
+    cache_read: 0.0

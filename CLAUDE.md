@@ -20,7 +20,7 @@ Kubemend is an LLM agent harness (built from scratch, no agent frameworks) that 
 
 ## Hard rules (do not violate, do not "improve")
 
-1. **No agent frameworks** (langchain, crewai, autogen, etc.). The hand-written loop is the point of the project. Allowed deps: anthropic, httpx, pydantic(+settings), typer, kubernetes, GitPython, jinja2, pyyaml — ask before adding others.
+1. **No agent frameworks** (langchain, crewai, autogen, litellm, etc.). The hand-written loop is the point of the project — provider clients are hand-written adapters over each vendor's own SDK, not a third-party abstraction layer. Allowed deps: anthropic (+ the `bedrock` extra), openai, httpx, pydantic(+settings), typer, kubernetes, GitPython, jinja2, pyyaml — ask before adding others.
 2. **The model is untrusted.** Success is decided only by `verify/gate.py` re-running validation (I1). Never add a code path where a model claim terminates a run.
 3. **Single write path.** Only `propose_git_change` has external side effects; it may only touch paths matching `gitops.writable_globs` and may never push to the base branch. Never add cluster-mutating capabilities to any tool.
 4. **Redaction is executor-level** (I3): all payloads pass `tools/redact.py` inside `registry.execute()` before entering context. Never fetch Secret values, not even to redact them.

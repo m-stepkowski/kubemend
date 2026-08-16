@@ -3,11 +3,36 @@
 
 model:
   main:
+    provider: anthropic # anthropic | openai | bedrock
     name: claude-sonnet-5
     max_cost_usd_per_run: 1.00
   cheap:
+    provider: anthropic
     name: claude-haiku-4-5
   pricing_table: config/pricing.yaml
+  # Per-tier provider examples (not the default — main/cheap above is what a
+  # fresh checkout actually runs):
+  #
+  # DeepSeek (or any OpenAI-compatible endpoint: vLLM, Ollama, ...) as the
+  # cheap tier, Claude on Bedrock as the main tier:
+  #   main:
+  #     provider: bedrock
+  #     name: us.anthropic.claude-sonnet-5-...
+  #     aws_region: us-east-1        # omit to use the AWS env/profile chain
+  #   cheap:
+  #     provider: openai
+  #     name: deepseek-v4-flash
+  #     base_url: https://api.deepseek.com
+  #
+  # A fully local endpoint (Ollama, vLLM) with a smaller context window:
+  #   cheap:
+  #     provider: openai
+  #     name: llama-3.1-8b
+  #     base_url: http://localhost:11434/v1
+  #     window_tokens: 128000        # falls back to context.model_window_tokens if unset
+  #
+  # Credentials are never set here — ANTHROPIC_API_KEY / OPENAI_API_KEY / the
+  # AWS credential chain, same as today.
 
 budgets:
   max_iterations: 15
