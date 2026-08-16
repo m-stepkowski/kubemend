@@ -116,6 +116,37 @@ class ArgoCdConfig(BaseModel):
     token_file: Path = Path(".lab/argocd-token")
 
 
+class OperatorConfig(BaseModel):
+    """`kubemend operator serve` (M8b) — receives Alertmanager webhooks and
+    creates the same kind of incident-response Job the manual
+    `helm template ... | kubectl create` path does (docs/knowledge/
+    operator-design.md). Disabled by default at the chart level.
+    """
+
+    port: int = 8080
+    cooldown_seconds: float = 300.0
+    # File, not an inline value — same idiom as gitea_token_file/argocd's
+    # token_file, never held as a plain config string.
+    webhook_token_file: Path = Path("/etc/kubemend/webhook-token")
+    # Baked into the container image at a fixed path (Dockerfile); the
+    # relative default matches a repo checkout for local dev/testing.
+    chart_dir: Path = Path("charts/kubemend")
+    # Rendered once at `helm install` time (templates/
+    # operator-job-values-configmap.yaml) and mounted here — the operator
+    # only ever adds the three per-alert dynamic fields on top of this.
+    job_values_file: Path = Path("/etc/kubemend/operator-job-values.yaml")
+    # The namespace to render/create Jobs into — the operator's own release
+    # namespace, injected by the chart as an env var.
+    namespace: str = "default"
+    # The operator's own Helm release name, injected by the chart. Required
+    # (not just cosmetic): templates/job.yaml references the config
+    # ConfigMap by `{{ include "kubemend.fullname" . }}-config`, which
+    # resolves to `.Release.Name`-config — `helm template` without a real
+    # release name silently defaults to the literal "release-name", pointing
+    # every spawned Job at a ConfigMap that doesn't exist.
+    release_name: str = "kubemend"
+
+
 class RunConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="KUBEMEND_",
@@ -135,6 +166,7 @@ class RunConfig(BaseSettings):
     # container image bakes its own copy in and overrides this via env, same
     # as model.pricing_table.
     policies_dir: Path = Path("policies")
+    operator: OperatorConfig = Field(default_factory=OperatorConfig)
 
 
 def load_config(path: Path | str = Path("kubemend.yaml")) -> RunConfig:

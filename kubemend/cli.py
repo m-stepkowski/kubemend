@@ -22,6 +22,7 @@ from kubemend.core.loop import run as run_loop
 from kubemend.core.model import RunResult, Scope, Task, Verdict
 from kubemend.llm.client import LLMClient, LLMError
 from kubemend.llm.factory import make_client
+from kubemend.operator.server import serve as operator_serve
 from kubemend.prompts import render
 from kubemend.tools.gitops.backend import GitBackend
 from kubemend.tools.gitops.gitea_backend import GiteaBackend
@@ -50,6 +51,12 @@ app = typer.Typer(
 
 trace_app = typer.Typer(help="Inspect the JSONL trace a run writes.", no_args_is_help=True)
 app.add_typer(trace_app, name="trace")
+
+operator_app = typer.Typer(
+    help="Receive Alertmanager webhooks and trigger incident-response Jobs (M8b).",
+    no_args_is_help=True,
+)
+app.add_typer(operator_app, name="operator")
 
 # `evals/` is deliberately excluded from the built wheel (dev/eval-only, not
 # part of what `pip install kubemend` or the container image ships — see
@@ -346,6 +353,26 @@ def _report(result: RunResult, *, model_name: str = "") -> None:
             typer.echo(f"    - {item}")
     if result.handoff.blocking_reason:
         typer.echo(f"  blocked by: {result.handoff.blocking_reason}")
+
+
+@operator_app.command("serve")
+def operator_serve_command(
+    config: Annotated[Path, typer.Option("--config")] = Path("kubemend.yaml"),
+    bin_dir: Annotated[
+        Path,
+        typer.Option(
+            "--bin-dir",
+            envvar="KUBEMEND_BIN_DIR",
+            help="Directory holding pinned helm/kyverno/kubectl/argocd binaries",
+        ),
+    ] = Path(".lab/bin"),
+) -> None:
+    """Block forever, receiving Alertmanager webhooks on operator.port and
+    creating incident-response Jobs (docs/knowledge/operator-design.md).
+    """
+    cfg = load_config(config)
+    typer.echo(f"kubemend operator listening on :{cfg.operator.port}", err=True)
+    operator_serve(cfg.operator, helm_bin=bin_dir / "helm", kubectl_bin=bin_dir / "kubectl")
 
 
 @trace_app.command()
