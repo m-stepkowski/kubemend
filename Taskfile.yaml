@@ -165,6 +165,7 @@ tasks:
     cmds:
       - |
         set -eu
+        mkdir -p {{.LAB_BIN}}
         tmp=$(mktemp -d)
         curl -fsSL "https://get.helm.sh/helm-{{.HELM_VERSION}}-{{.OS}}-{{.ARCH}}.tar.gz" \
           | tar -xz -C "$tmp"
