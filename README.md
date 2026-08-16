@@ -192,9 +192,19 @@ The Job runs with its own tightly-scoped in-cluster ServiceAccount
 (`kubernetes.in_cluster: true`, no kubeconfig file involved) via the same
 `ghcr.io/m-stepkowski/kubemend` image published on each release. See
 [`charts/kubemend/README.md`](charts/kubemend/README.md) for wiring in a
-GitOps repo checkout and the full values reference. There is no
-alert-triggered automation yet — every run above is a human decision; see
-[`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md)'s M8b for that design.
+GitOps repo checkout and the full values reference.
+
+Alert-triggered automation is also available as of M8b: `--set
+operator.enabled=true` deploys a small webhook receiver (stdlib
+`http.server`, no framework) that creates the same kind of Job on its own
+when Alertmanager fires, gated by a required bearer token and a per-scope
+cooldown. It is a distinct, narrower-RBAC identity from both the reader and
+the manual-trigger path, and does not change what happens once a Job starts
+— every run still goes through the same untrusted-model loop and
+verification gate. See [`charts/kubemend/README.md`](charts/kubemend/README.md)'s
+"Alert-triggered operator" section to enable it, and
+[`docs/threat-model.md`](docs/threat-model.md) §11 before doing so in a real
+cluster.
 
 ## Project layout
 
@@ -221,6 +231,7 @@ Full tree and rationale for each module: [`ARCHITECTURE.md §9`](ARCHITECTURE.md
 - [x] M6 — adversarial scenarios (scope traps, log-based prompt injection), v0.2 publish
 - [x] M7 — multi-LLM-provider support (OpenAI-compatible, AWS Bedrock)
 - [x] M8a — packaging (container image, ghcr.io + PyPI publish, Helm chart, in-cluster kubeconfig)
+- [x] M8b — alert-triggered operator (Alertmanager webhook, cooldown, bearer-token auth)
 
 Details and acceptance criteria per milestone: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
 
