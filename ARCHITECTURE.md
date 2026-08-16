@@ -308,7 +308,7 @@ observability:
   provider: prometheus_loki
   prometheus_url: http://localhost:9090     # port-forwarded lab endpoints
   loki_url: http://localhost:3100
-kubernetes: {kubeconfig: ~/.kube/kubemend-lab-readonly, context: kind-kubemend}
+kubernetes: {kubeconfig: ~/.kube/kubemend-lab-readonly, context: kind-kubemend, in_cluster: false}
 gitops:
   backend: local            # local | gitea
   repo_path: ../kubemend-lab-gitops
@@ -317,6 +317,8 @@ gitops:
 ```
 
 RBAC note: the lab bootstrap generates a dedicated ServiceAccount + ClusterRole (get/list/watch on the allow-listed kinds, no secrets `get`) and exports the read-only kubeconfig the agent uses. The agent process never holds cluster-admin.
+
+In-cluster credentials (M8a): `kubernetes.in_cluster: true` selects `KubeApiClient.in_cluster()` instead of the kubeconfig-file path — auth comes from the projected ServiceAccount token Kubernetes mounts automatically into a Job/Pod, and `kubeconfig`/`context` are ignored. `kubemend/tools/kubernetes/factory.py:build_kube_client(cfg)` is the one place that branches on this, mirroring `llm/factory.py`'s pattern from M7. The Helm chart (`charts/kubemend/`) installs the same read-only rule list as a namespace-scoped `Role` by default (or a `ClusterRole` via `rbac.clusterScoped: true`) for exactly this mode.
 
 ---
 

@@ -162,6 +162,40 @@ Cheap model (`claude-haiku-4-5`) numbers, used for day-to-day regression
 sweeps during development, are lower and cheaper — see
 [`evals/reports/latest/`](evals/reports/latest/).
 
+## Deploy in-cluster
+
+A `kubemend run` from a laptop needs a kubeconfig holding the full read-only
+RBAC kubemend uses. The [Helm chart](charts/kubemend/) exists to narrow that:
+install it once and an on-call engineer only needs permission to *create a
+Job* in one namespace, not the reader's own permissions.
+
+```bash
+helm install kubemend charts/kubemend -n kubemend-system --create-namespace
+```
+
+This installs the reader ServiceAccount and RBAC (namespace-scoped `Role` by
+default; `--set rbac.clusterScoped=true` for a `ClusterRole`) and spawns
+nothing — `job.enabled` defaults to `false`. To trigger a run:
+
+```bash
+helm template kubemend charts/kubemend \
+  --namespace kubemend-system \
+  --set job.enabled=true \
+  --set job.namespace=shop \
+  --set job.app=shop-api \
+  --set job.task="shop-api pods are crash-looping" \
+  -s templates/job.yaml \
+  | kubectl create -f -
+```
+
+The Job runs with its own tightly-scoped in-cluster ServiceAccount
+(`kubernetes.in_cluster: true`, no kubeconfig file involved) via the same
+`ghcr.io/m-stepkowski/kubemend` image published on each release. See
+[`charts/kubemend/README.md`](charts/kubemend/README.md) for wiring in a
+GitOps repo checkout and the full values reference. There is no
+alert-triggered automation yet — every run above is a human decision; see
+[`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md)'s M8b for that design.
+
 ## Project layout
 
 ```
@@ -186,6 +220,7 @@ Full tree and rationale for each module: [`ARCHITECTURE.md §9`](ARCHITECTURE.md
 - [x] M5 — baseline benchmarks, threat model, v0.1 publish
 - [x] M6 — adversarial scenarios (scope traps, log-based prompt injection), v0.2 publish
 - [x] M7 — multi-LLM-provider support (OpenAI-compatible, AWS Bedrock)
+- [x] M8a — packaging (container image, ghcr.io + PyPI publish, Helm chart, in-cluster kubeconfig)
 
 Details and acceptance criteria per milestone: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
 
