@@ -276,10 +276,9 @@ def run(
     ] = Path("evals/reports/latest"),
 ) -> None:
     """Run scenario sweeps and emit the pass-rate report."""
-    import anthropic
-
-    from kubemend.cli import resolve_model_tier
-    from kubemend.llm.anthropic_client import AnthropicClient
+    from kubemend.cli import _credential_hint, resolve_model_tier
+    from kubemend.llm.client import LLMError
+    from kubemend.llm.factory import make_client
 
     cfg = load_config(config)
     try:
@@ -309,9 +308,9 @@ def run(
         raise typer.Exit(code=1)
 
     try:
-        llm = AnthropicClient(cfg)
-    except anthropic.AnthropicError as exc:
-        typer.echo(f"could not authenticate to the Anthropic API: {exc}", err=True)
+        llm = make_client(cfg)
+    except LLMError as exc:
+        typer.echo(f"could not construct an LLM client: {exc}\n{_credential_hint(cfg)}", err=True)
         raise typer.Exit(code=1) from exc
 
     lab = _build_lab(cfg)
