@@ -36,9 +36,15 @@ RUN set -eu; \
       | tar -xz -C "$tmp"; \
     mv "$tmp/${TARGETOS}-${TARGETARCH}/helm" ./helm; \
     rm -rf "$tmp"
+# kyverno's release assets use x86_64/arm64 (uname-style), not Docker's own
+# amd64/arm64 TARGETARCH convention the other three tools share — arm64
+# happens to match either way, which is why this only breaks on amd64 and
+# was never caught building locally on an arm64 (Apple Silicon) machine.
 RUN set -eu; \
     tmp=$(mktemp -d); \
-    curl -fsSL "https://github.com/kyverno/kyverno/releases/download/${KYVERNO_VERSION}/kyverno-cli_${KYVERNO_VERSION}_${TARGETOS}_${TARGETARCH}.tar.gz" \
+    kyverno_arch="${TARGETARCH}"; \
+    [ "$kyverno_arch" = "amd64" ] && kyverno_arch="x86_64"; \
+    curl -fsSL "https://github.com/kyverno/kyverno/releases/download/${KYVERNO_VERSION}/kyverno-cli_${KYVERNO_VERSION}_${TARGETOS}_${kyverno_arch}.tar.gz" \
       | tar -xz -C "$tmp"; \
     mv "$tmp/kyverno" ./kyverno; \
     rm -rf "$tmp"
