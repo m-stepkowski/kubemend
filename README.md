@@ -75,6 +75,25 @@ non-Anthropic entries there are placeholders sourced from public pricing
 pages, not verified against an invoice; check before trusting them for a
 committed baseline.
 
+## Install
+
+Every tagged release publishes to both PyPI and ghcr.io:
+
+```bash
+pip install kubemend
+```
+
+```bash
+docker pull ghcr.io/m-stepkowski/kubemend:latest
+docker run --rm ghcr.io/m-stepkowski/kubemend:latest --help
+```
+
+Either way you'll need model credentials (`ANTHROPIC_API_KEY` by default —
+see "Model providers" above) and a `kubemend.yaml` pointing at your
+cluster's Prometheus/Loki, kubeconfig, and GitOps repo — see the committed
+[`kubemend.yaml`](kubemend.yaml)'s own comments for every field. To run
+in-cluster instead of from a laptop, see "Deploy in-cluster" below.
+
 ## Quickstart
 
 Requires [Docker](https://docs.docker.com/get-docker/) (or Rancher Desktop —
