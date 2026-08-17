@@ -202,8 +202,14 @@ tasks:
     cmds:
       - |
         set -eu
+        mkdir -p {{.LAB_BIN}}
         tmp=$(mktemp -d)
-        curl -fsSL "https://github.com/kyverno/kyverno/releases/download/{{.KYVERNO_VERSION}}/kyverno-cli_{{.KYVERNO_VERSION}}_{{.OS}}_{{.ARCH}}.tar.gz" \
+        # kyverno's release assets use x86_64/arm64 (uname-style), not the
+        # amd64/arm64 vars the other three tools share — only breaks on
+        # amd64, so this was never caught building on an arm64 dev machine.
+        kyverno_arch={{.ARCH}}
+        [ "$kyverno_arch" = "amd64" ] && kyverno_arch=x86_64
+        curl -fsSL "https://github.com/kyverno/kyverno/releases/download/{{.KYVERNO_VERSION}}/kyverno-cli_{{.KYVERNO_VERSION}}_{{.OS}}_${kyverno_arch}.tar.gz" \
           | tar -xz -C "$tmp"
         mv "$tmp/kyverno" "{{.LAB_BIN}}/kyverno"
         chmod +x "{{.LAB_BIN}}/kyverno"
