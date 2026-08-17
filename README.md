@@ -9,11 +9,11 @@ It diagnoses incidents from Prometheus metrics and Loki logs, proposes a fix, an
 [![CI](https://img.shields.io/github/actions/workflow/status/m-stepkowski/kubemend/ci.yml?branch=main&label=CI)](../../actions)
 [![License](https://img.shields.io/github/license/m-stepkowski/kubemend)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12-blue)](pyproject.toml)
-[![Status](https://img.shields.io/badge/status-v0.2-blue)](IMPLEMENTATION_PLAN.md)
+[![Release](https://img.shields.io/github/v/release/m-stepkowski/kubemend)](../../releases)
 
 </div>
 
-> **Status:** v0.2 (M0–M6 complete). Nine scenarios — six fault-injection, three adversarial/negative — with real, committed eval sweeps on the main model, not placeholders. Not production-ready: no alert-triggered runs, no multi-repo GitOps, no sandboxed tool execution yet. See [`docs/threat-model.md`](docs/threat-model.md) for what's in and out of scope.
+Not production-ready: no multi-repo GitOps, no sandboxed tool execution yet. See [`docs/threat-model.md`](docs/threat-model.md) for what's in and out of scope.
 
 ---
 
@@ -219,21 +219,6 @@ docs/knowledge/    design contracts — read before modifying core/, tools/, or 
 ```
 
 Full tree and rationale for each module: [`ARCHITECTURE.md §9`](ARCHITECTURE.md).
-
-## Roadmap
-
-- [x] M0 — scaffold & CI
-- [x] M1 — harness core against a FakeLLM (loop, context, budgets, loop detector — zero network)
-- [x] M2 — lab up, read-only observability & K8s tools
-- [x] M3 — GitOps write path + independent verification gate
-- [x] M4 — fault-injection scenarios + eval runner
-- [x] M5 — baseline benchmarks, threat model, v0.1 publish
-- [x] M6 — adversarial scenarios (scope traps, log-based prompt injection), v0.2 publish
-- [x] M7 — multi-LLM-provider support (OpenAI-compatible, AWS Bedrock)
-- [x] M8a — packaging (container image, ghcr.io + PyPI publish, Helm chart, in-cluster kubeconfig)
-- [x] M8b — alert-triggered operator (Alertmanager webhook, cooldown, bearer-token auth)
-
-Details and acceptance criteria per milestone: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
 
 ## Contributing
 
