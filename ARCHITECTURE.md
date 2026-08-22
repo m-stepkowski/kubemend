@@ -190,11 +190,13 @@ Exact schemas live in `docs/knowledge/tool-contracts.md`; summary:
 |---|---|---|---|
 | `query_metrics(promql, start, end, step)` | read | Prometheus/Mimir HTTP API (`/api/v1/query_range`) | Downsamples to ≤ `max_points` (default 100) per series; returns series labels + values. Model writes PromQL directly. |
 | `search_logs(logql, start, end, limit, direction)` | read | Loki HTTP API (`/loki/api/v1/query_range`) | `limit` ≤ 500 enforced server-side by executor. Model writes LogQL directly. |
+| ↳ `datadog` provider (M9) | read | Datadog v2 API (`/api/v2/query/timeseries`, `/api/v2/logs/events/search`) | `query_metrics`/`search_logs` argument names are provider-specific — `metric_query`/`log_query`, not `promql`/`logql` — since each provider's own query language is exposed directly rather than translated. Result shapes (`MetricResult`/`LogResult`) are identical either way. Exact schemas per provider: `docs/knowledge/tool-contracts.md`. |
+| ↳ `grafana_cloud` provider | read | Grafana Cloud hosted Mimir/Loki (same `/api/v1/query_range`/`/loki/api/v1/query_range` APIs) | Reuses `PrometheusProvider`/`LokiProvider` unchanged apart from HTTP Basic Auth on the client — schema is identical to `prometheus_loki` (`promql`/`logql`, not renamed). Only the transport (auth, hosted URLs) differs. |
 | `get_k8s_state(kind, namespace, name?, selector?, include_events)` | read | kubernetes Python client, **read-only kubeconfig** | Allow-listed kinds (pods, deploy, sts, svc, cm *keys only*, events, hpa, quota, ingress). Secrets: names/keys only, never values. Redaction §3.3. |
 | `propose_git_change(files, rationale, incident_ref)` | propose | Git backend (§4) | `files` restricted by path policy: `apps/**/values*.yaml` only in v0.1. One active branch per run; repeated calls amend it. |
 | `validate_change()` | verify | Validator pipeline (§5) | No arguments — always validates the run's active branch. Callable by the model for cheap mid-loop self-checks; the gate re-runs it independently at termination (I1). |
 
-Observability providers implement one interface so the module is swappable later (Dynatrace/CloudWatch as future drop-ins):
+Observability providers implement one interface so the module is swappable later (Dynatrace/CloudWatch as future drop-ins). As of M9 this is no longer aspirational: `datadog` is a second, real implementation alongside `prometheus_loki`, dispatched via `ObservabilityConfig.provider` (`kubemend/tools/observability/factory.py`) — neither the tool layer nor the loop learned anything Datadog-specific to support it. A third, `grafana_cloud`, needed no new provider class at all: Grafana Cloud's hosted Mimir/Loki are wire-compatible with the same Prometheus/Loki HTTP APIs, so it reuses `PrometheusProvider`/`LokiProvider` with Basic Auth added to the client.
 
 ```python
 class ObservabilityProvider(Protocol):

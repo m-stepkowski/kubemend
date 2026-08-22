@@ -12,6 +12,7 @@ without the tool layer or the loop learning anything new.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -47,6 +48,25 @@ def parse_time(value: str, *, now: datetime | None = None) -> datetime:
             f"cannot parse time '{value}'; use RFC3339, 'now', or a relative offset like -30m"
         ) from exc
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def downsample(
+    points: list[tuple[float, float]], max_points: int
+) -> tuple[list[tuple[float, float]], bool]:
+    """Keep at most `max_points` samples by striding, always keeping the last.
+
+    The final sample is what says whether the problem is still happening, so it
+    survives even when the stride would otherwise drop it. Provider-neutral —
+    every backend downsamples client-side the same way once it has returned
+    whatever points it has.
+    """
+    if max_points <= 0 or len(points) <= max_points:
+        return points, False
+    stride = math.ceil(len(points) / max_points)
+    reduced = points[::stride]
+    if reduced[-1] != points[-1]:
+        reduced.append(points[-1])
+    return reduced, True
 
 
 @dataclass(frozen=True)

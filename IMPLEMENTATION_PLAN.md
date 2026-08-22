@@ -148,13 +148,19 @@ Accept: `helm install` with `operator.enabled=true` becomes ready; an authentica
 
 ---
 
-## M9 — Datadog observability provider (1–2 sessions)
+## M9 — Datadog observability provider (shipped)
 
 **Goal:** a second `ObservabilityProvider` proves the tool layer is genuinely provider-shaped, not Prometheus/Loki-shaped by accident.
 
 Scope: `DatadogProvider` on raw httpx, no vendor SDK (`DD-API-KEY`/`DD-APPLICATION-KEY` read from token files, mirroring `GitOpsConfig`'s `*_token_file` idiom); Datadog's v2 `/api/v2/query/timeseries` and `/api/v2/logs/events/search` endpoints; **provider-specific tool schemas** — Datadog's own query syntax, not the `promql`/`logql` argument names (schemas are contracts per `docs/knowledge/tool-contracts.md`, updated in the same PR); dispatch on `ObservabilityConfig.provider`, which today is a `Literal` nobody reads; extract the provider-wiring currently inline in `cli.py:build_read_only_registry` into a factory; abstract the eval harness's `evals/lab.py:_log_contains` LogQL coupling behind a provider-neutral symptom-probe interface; add the schema-vs-doc contract test that doesn't exist yet for either provider.
 
-Accept: unit suite green including new contract tests for both providers; the existing 9-scenario suite still passes unmodified on `prometheus_loki`; the Datadog path is validated by contract tests plus one manual run against a real Datadog org (no lab-cluster Datadog instance).
+Accept: unit suite green including new contract tests for both providers; the existing 9-scenario suite still passes unmodified on `prometheus_loki`; the Datadog path is validated by contract tests plus one manual run against a real Datadog org.
+
+Also added (opt-in, not part of `lab:up`): `task lab:datadog-agent` installs a real Datadog Agent (node agent only, cluster-agent disabled — kube-prometheus-stack already runs kube-state-metrics) into the kind lab via `lab/bootstrap/values/datadog.yaml`, so the lab cluster's own metrics/logs can flow to a real org for validation instead of only synthetic points.
+
+Manual run: against a real (fresh) `datadoghq.eu` org. First against no data at all — confirmed auth via `DD-API-KEY`/`DD-APPLICATION-KEY` succeeds, `query_metrics` against a metric nothing reports correctly returns the empty-series hint rather than erroring, and `search_logs` initially surfaced Datadog's real `invalid_argument(No valid indexes specified)` error as a `ClientError` instead of crashing or hanging (the org had no log index provisioned yet with zero data). Then submitted synthetic multi-tag metrics (`/api/v1/series`) and logs (`/api/v2/logs` intake) directly and re-queried through `DatadogProvider`: `query_metrics` correctly split a grouped query into 2 `MetricSeries` with the right `labels`/values, and `search_logs` correctly grouped 2 flat log events into 2 `LogStream`s by tag set (the index appeared once real data arrived) — so the zip-into-series and tag-set-grouping paths are now proven against live Datadog responses, not just `test_datadog.py`'s `MockTransport` fixtures.
+
+Finally, ran the full pipeline live end-to-end: `task lab:up` against the kind lab, `task lab:datadog-agent` to also report the lab's own cluster data to Datadog, then `task evals -- -s bad-image-tag -n 1 --model cheap` with the cheap tier pointed at `gpt-4.1-mini` (`KUBEMEND_MODEL__CHEAP__PROVIDER=openai KUBEMEND_MODEL__CHEAP__NAME=gpt-4.1-mini`). Passed 1/1 after fixing an unrelated stale `.lab/argocd-token` (left over from cluster teardown/recreate churn during this session — `lab:argocd-token` only regenerates when the file is absent, so it never noticed the underlying cluster had changed). Confirmed afterward that the lab's *real* cluster metrics/logs (not synthetic) are queryable through `DatadogProvider`: `avg:kubernetes.cpu.usage.total{kube_namespace:shop} by {pod_name}` returned live per-pod series, and `search_logs` on `kube_namespace:shop` returned real shop-api container logs grouped by tag set with full Kubernetes metadata (`kube_deployment`, `kube_replica_set`, `image_tag`, etc.).
 
 ---
 

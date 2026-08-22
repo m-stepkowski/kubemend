@@ -8,6 +8,29 @@ RBAC: bootstrap generates ServiceAccount `kubemend-reader`, ClusterRole with get
 
 Endpoints for local runs are port-forwards managed by `task lab:forward` (Prometheus :9090, Loki :3100, gitea :3000, Argo :8080).
 
+Optional, not part of `lab:up`: `task lab:datadog-agent` installs a node-only
+Datadog Agent (`lab/bootstrap/values/datadog.yaml`; cluster-agent disabled —
+kube-prometheus-stack's kube-state-metrics already covers that) so the lab's
+own cluster metrics/logs report to a real Datadog org, for validating
+`DatadogProvider` (M9) against live data rather than only hand-submitted
+synthetic points. Needs `.lab/datadog-api-key` (README's "Observability
+providers"); site defaults to `datadoghq.com`, override with
+`DATADOG_SITE=datadoghq.eu task lab:datadog-agent`.
+
+Also optional, not part of `lab:up`: `task lab:grafana-agent` installs a single
+Grafana Alloy instance (`lab/bootstrap/values/grafana-alloy.yaml`; `deployment`
+with one replica, not a per-node DaemonSet — every component here reaches the
+cluster over the Kubernetes API) so the lab's own cluster metrics/logs report
+to a real Grafana Cloud account, for validating the `grafana_cloud` provider
+against live data rather than only hand-submitted synthetic points. Needs
+`.lab/grafana-cloud-token` plus `GRAFANA_CLOUD_PROM_PUSH_URL`,
+`GRAFANA_CLOUD_PROM_USERNAME`, `GRAFANA_CLOUD_LOKI_PUSH_URL`,
+`GRAFANA_CLOUD_LOKI_USERNAME` env vars (README's "Observability providers").
+Validated live: a real run pushed cluster metrics (`up` series scraped by
+`prometheus.scrape.cluster_pods`) and logs (`loki.source.kubernetes`, tagged
+by namespace/pod/container) to a real Grafana Cloud account, both correctly
+queryable back through `PrometheusProvider`/`LokiProvider`.
+
 ## Scenario format
 
 ```

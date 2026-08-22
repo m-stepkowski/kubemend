@@ -1,0 +1,89 @@
+# Optional (manual validation only): a single Grafana Alloy instance that
+# discovers this lab cluster's own pods via the Kubernetes API — no hostPath,
+# no DaemonSet (discovery.kubernetes + prometheus.scrape for metrics,
+# discovery.kubernetes + loki.source.kubernetes for logs, both reaching the
+# cluster over the API server rather than local node access) — and pushes
+# them to a real Grafana Cloud account, so PrometheusProvider/LokiProvider
+# (pointed at grafana_cloud_*_url) can be exercised against live cluster data
+# instead of hand-submitted synthetic points. Not part of `lab:up` —
+# installed only via `task lab:grafana-agent`.
+#
+# Every account-specific value (push URLs, usernames, the token) is read from
+# the container's own environment via Alloy's sys.env() function, never
+# written into this file — task lab:grafana-agent injects them via
+# alloy.extraEnv at install time (adapted from lab:datadog-agent's
+# --set datadog.apiKey idiom, because Alloy's whole pipeline is one
+# templatable config string rather than discrete Helm value leaves).
+#
+# Validated live against a real Grafana Cloud account: metrics (`up` series
+# from prometheus.scrape.cluster_pods) and logs (loki.source.kubernetes,
+# tagged by namespace/pod/container) both round-tripped correctly through
+# PrometheusProvider/LokiProvider. Push URLs used were the documented
+# `<query_url>/push` (Prometheus) and `<loki_url>/loki/api/v1/push` (Loki)
+# convention — confirm those still match your own stack's connection-details
+# page if the URLs look different.
+
+controller:
+  # discovery.kubernetes / prometheus.scrape / loki.source.kubernetes all
+  # reach the cluster over the Kubernetes API rather than the local node, so
+  # one replica covers the whole cluster — deliberately not the chart's
+  # daemonset default.
+  type: deployment
+  replicas: 1
+
+rbac:
+  create: true
+
+alloy:
+  configMap:
+    create: true
+    content: |-
+      prometheus.remote_write "grafana_cloud" {
+        endpoint {
+          url = sys.env("GRAFANA_CLOUD_PROM_PUSH_URL")
+          basic_auth {
+            username = sys.env("GRAFANA_CLOUD_PROM_USERNAME")
+            password = sys.env("GRAFANA_CLOUD_TOKEN")
+          }
+        }
+      }
+
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      prometheus.scrape "cluster_pods" {
+        targets    = discovery.kubernetes.pods.targets
+        forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+      }
+
+      loki.write "grafana_cloud" {
+        endpoint {
+          url = sys.env("GRAFANA_CLOUD_LOKI_PUSH_URL")
+          basic_auth {
+            username = sys.env("GRAFANA_CLOUD_LOKI_USERNAME")
+            password = sys.env("GRAFANA_CLOUD_TOKEN")
+          }
+        }
+      }
+
+      discovery.relabel "pods_for_logs" {
+        targets = discovery.kubernetes.pods.targets
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label  = "container"
+        }
+      }
+
+      loki.source.kubernetes "pods" {
+        targets    = discovery.relabel.pods_for_logs.output
+        forward_to = [loki.write.grafana_cloud.receiver]
+      }
