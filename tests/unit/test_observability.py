@@ -16,15 +16,12 @@ import pytest
 
 from kubemend.tools.base import ClientError, TransportError
 from kubemend.tools.observability.loki import MAX_LIMIT, LokiProvider
-from kubemend.tools.observability.prometheus import (
-    PrometheusProvider,
-    auto_step_seconds,
-    downsample,
-)
+from kubemend.tools.observability.prometheus import PrometheusProvider, auto_step_seconds
 from kubemend.tools.observability.provider import (
     LogQuery,
     MetricQuery,
     TimeRangeError,
+    downsample,
     parse_time,
 )
 

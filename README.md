@@ -75,6 +75,34 @@ non-Anthropic entries there are placeholders sourced from public pricing
 pages, not verified against an invoice; check before trusting them for a
 committed baseline.
 
+## Observability providers
+
+`query_metrics`/`search_logs` are backed by whichever provider
+`observability.provider` selects — only one provider's tool pair is ever
+registered per run, so switching providers changes the tool argument names
+the model sees (`promql`/`logql` vs `metric_query`/`log_query`; see
+[`docs/knowledge/tool-contracts.md`](docs/knowledge/tool-contracts.md)), not
+just where the data comes from:
+
+| Provider | `observability.provider` | Credentials |
+|---|---|---|
+| Prometheus + Loki | `prometheus_loki` (default) | none beyond network access — the lab's read-only ServiceAccount already covers it |
+| Datadog | `datadog` | `datadog_api_key_file`/`datadog_app_key_file` (default `.lab/datadog-api-key`/`.lab/datadog-app-key`, gitignored — generate a Datadog API key and an application key with log/metric read scope and write them there, one key per file, no trailing newline needed) |
+
+```yaml
+observability:
+  provider: datadog
+  datadog_site: datadoghq.eu   # datadoghq.com | datadoghq.eu | us3/us5/ap1.datadoghq.com | ...
+  datadog_api_key_file: .lab/datadog-api-key
+  datadog_app_key_file: .lab/datadog-app-key
+```
+
+To validate the Datadog path against the lab cluster's own data instead of a
+real incident, `task lab:datadog-agent` (opt-in, not part of `lab:up`)
+installs a real Datadog Agent into the kind cluster reporting its metrics and
+logs to your org — see `DATADOG_SITE=... task lab:datadog-agent` and
+[`docs/knowledge/lab-and-evals.md`](docs/knowledge/lab-and-evals.md).
+
 ## Install
 
 Every tagged release publishes to both PyPI and ghcr.io:

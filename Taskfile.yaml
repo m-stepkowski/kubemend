@@ -25,6 +25,9 @@ vars:
   ARGOCD_CHART_VERSION: 7.7.11
   PROMTAIL_CHART_VERSION: 6.16.6
   KYVERNO_CHART_VERSION: 3.3.4
+  # M9 manual-validation only (task lab:datadog-agent, not part of lab:up).
+  DATADOG_CHART_VERSION: 3.240.0
+  DATADOG_SITE: datadoghq.com
 
   # Consumed by kubemend.yaml; the agent process holds this and nothing else.
   READONLY_KUBECONFIG:
@@ -547,6 +550,29 @@ tasks:
         EOF
         chmod 600 "$KC"
         echo "wrote read-only kubeconfig to $KC"
+
+  lab:datadog-agent:
+    desc: "Install the Datadog Agent for M9 manual validation (opt-in, not part of lab:up); override site with DATADOG_SITE=datadoghq.eu"
+    deps: [lab:cluster]
+    env:
+      KUBECONFIG: '{{.KUBECONFIG_ADMIN}}'
+    cmds:
+      - |
+        set -eu
+        if [ ! -f {{.ROOT_DIR}}/.lab/datadog-api-key ]; then
+          echo "missing {{.ROOT_DIR}}/.lab/datadog-api-key" >&2
+          exit 1
+        fi
+      - '{{.LAB_BIN}}/helm repo add datadog https://helm.datadoghq.com --force-update'
+      - '{{.LAB_BIN}}/helm repo update datadog'
+      - |
+        {{.LAB_BIN}}/helm upgrade --install datadog-agent datadog/datadog \
+          --version {{.DATADOG_CHART_VERSION}} \
+          --namespace datadog --create-namespace \
+          --values {{.ROOT_DIR}}/lab/bootstrap/values/datadog.yaml \
+          --set datadog.site={{.DATADOG_SITE}} \
+          --set datadog.apiKey="$(cat {{.ROOT_DIR}}/.lab/datadog-api-key)" \
+          --wait --timeout 5m
 
   lab:forward:
     desc: Port-forward Prometheus/Loki/gitea/Argo to localhost (Ctrl-C to stop)

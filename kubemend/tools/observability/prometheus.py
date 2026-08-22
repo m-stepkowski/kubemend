@@ -20,27 +20,11 @@ from kubemend.tools.observability.provider import (
     MetricResult,
     MetricSeries,
     TimeRangeError,
+    downsample,
     parse_time,
 )
 
 EMPTY_HINT = "no series matched; check label selectors and the time range"
-
-
-def downsample(
-    points: list[tuple[float, float]], max_points: int
-) -> tuple[list[tuple[float, float]], bool]:
-    """Keep at most `max_points` samples by striding, always keeping the last.
-
-    The final sample is what says whether the problem is still happening, so it
-    survives even when the stride would otherwise drop it.
-    """
-    if max_points <= 0 or len(points) <= max_points:
-        return points, False
-    stride = math.ceil(len(points) / max_points)
-    reduced = points[::stride]
-    if reduced[-1] != points[-1]:
-        reduced.append(points[-1])
-    return reduced, True
 
 
 def auto_step_seconds(start: datetime, end: datetime, max_points: int) -> int:

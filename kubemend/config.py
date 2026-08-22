@@ -71,9 +71,16 @@ class ContextConfig(BaseModel):
 
 
 class ObservabilityConfig(BaseModel):
-    provider: Literal["prometheus_loki"] = "prometheus_loki"
+    provider: Literal["prometheus_loki", "datadog"] = "prometheus_loki"
     prometheus_url: str = "http://localhost:9090"
     loki_url: str = "http://localhost:3100"
+
+    # Only used when provider == "datadog". Keys are read from files rather
+    # than held as plain strings, same idiom as gitea_token_file/argocd's
+    # token_file, so a credential never lands in a committed file or a log line.
+    datadog_site: str = "datadoghq.com"
+    datadog_api_key_file: Path = Path(".lab/datadog-api-key")
+    datadog_app_key_file: Path = Path(".lab/datadog-app-key")
 
 
 class KubernetesConfig(BaseModel):

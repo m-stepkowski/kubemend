@@ -373,6 +373,36 @@ def test_log_contains_matches_a_substring(remote_and_clone: tuple[Path, Path]) -
     lab.wait_for_symptom(probe, SCOPE)
 
 
+def test_log_contains_uses_the_injected_query_builder_not_the_loki_default(
+    remote_and_clone: tuple[Path, Path],
+) -> None:
+    """A provider-neutral seam (M9): a Datadog-backed lab would inject its own
+    builder here instead of `loki_log_contains_query` — asserting the
+    injected one is what actually gets called is what keeps that seam real."""
+    _bare, clone_path = remote_and_clone
+    clock = FakeClock()
+    calls: list[tuple[Scope, str]] = []
+
+    def fake_builder(scope: Scope, substring: str) -> LogQuery:
+        calls.append((scope, substring))
+        return LogQuery(query="ignored", start="-5m", end="now")
+
+    lab = LabHandle(
+        workspace=clone_path,
+        base_branch="main",
+        kube=FakeKube(),
+        loki=FakeLoki(lines=["ERROR connecting to upstream: refused"]),
+        clock=clock.clock,
+        sleep=clock.sleep,
+        log_query_builder=fake_builder,
+    )
+    probe = SymptomProbe(kind="log_contains", value="ERROR connecting to upstream", timeout_s=10)
+
+    lab.wait_for_symptom(probe, SCOPE)
+
+    assert calls == [(SCOPE, "ERROR connecting to upstream")]
+
+
 def test_probe_that_never_matches_times_out_with_a_named_exception(
     remote_and_clone: tuple[Path, Path],
 ) -> None:

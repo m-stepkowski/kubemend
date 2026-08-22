@@ -1,0 +1,32 @@
+# Optional (M9 manual validation only): node Agent reporting the lab
+# cluster's own metrics/logs to a real Datadog org, so DatadogProvider can be
+# exercised against live cluster data instead of hand-submitted synthetic
+# points. Not part of `lab:up` — installed only via `task lab:datadog-agent`.
+#
+# apiKey and site are injected via --set at install time (site varies per
+# user/org, apiKey from a file, same pattern lab:gitea uses for its admin
+# password) — neither is written into this file.
+
+datadog:
+  logs:
+    enabled: true
+    containerCollectAll: true
+  # kind's kubelet serves a self-signed cert the Agent doesn't have a CA for;
+  # this is the documented setting for kind/minikube-style clusters, not a
+  # general weakening of the Agent's own security posture.
+  kubelet:
+    tlsVerify: false
+
+# The cluster-agent's own checks (kubernetes_state_core etc.) would double up
+# with kube-prometheus-stack's kube-state-metrics already running in this lab
+# — the node Agent alone is enough to prove real cluster data reaches
+# DatadogProvider.
+clusterAgent:
+  enabled: false
+
+agents:
+  containers:
+    agent:
+      resources:
+        requests: {cpu: 100m, memory: 256Mi}
+        limits: {memory: 512Mi}

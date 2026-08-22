@@ -27,6 +27,29 @@ from kubemend.core.model import Scope
 from kubemend.tools.observability.provider import LogQuery, LogResult
 
 
+def loki_log_contains_query(scope: Scope, substring: str) -> LogQuery:
+    """A server-side LogQL line filter, not a client-side scan.
+
+    A pod can carry a noisy primary container (nginx's access log on every
+    probe hit) alongside the sparse sidecar output a scenario actually cares
+    about. Fetching the last N lines and scanning client-side lets the noisy
+    stream crowd the sparse one out of the window entirely — the fix is
+    asking Loki to filter before truncating, the same `|=` pattern documented
+    for the agent's own search_logs tool.
+    """
+    escaped = substring.replace("\\", "\\\\").replace('"', '\\"')
+    return LogQuery(
+        query=f'{{namespace="{scope.namespace}", pod=~"{scope.app}-.*"}} |= "{escaped}"',
+        start="-5m",
+        end="now",
+        limit=50,
+    )
+
+
+class LogContainsQueryBuilder(Protocol):
+    def __call__(self, scope: Scope, substring: str) -> LogQuery: ...
+
+
 class SymptomTimeout(Exception):
     """The injected fault never produced the state the scenario expects.
 
@@ -77,6 +100,7 @@ class LabHandle:
         kube_version: str = "1.31.2",
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        log_query_builder: LogContainsQueryBuilder = loki_log_contains_query,
     ) -> None:
         self.workspace = workspace
         self.base_branch = base_branch
@@ -87,6 +111,7 @@ class LabHandle:
         self.kube_version = kube_version
         self._clock = clock
         self._sleep = sleep
+        self._log_query_builder = log_query_builder
         self._known_good_sha: str | None = None
 
     def _repo(self) -> Repo:
@@ -222,24 +247,7 @@ class LabHandle:
         return f"{condition_type} statuses seen: {observed}" if observed else False
 
     def _log_contains(self, scope: Scope, substring: str) -> bool | str:
-        """A server-side LogQL line filter, not a client-side scan.
-
-        A pod can carry a noisy primary container (nginx's access log on every
-        probe hit) alongside the sparse sidecar output a scenario actually
-        cares about. Fetching the last N lines and scanning client-side lets
-        the noisy stream crowd the sparse one out of the window entirely — the
-        fix is asking Loki to filter before truncating, the same `|=` pattern
-        documented for the agent's own search_logs tool.
-        """
-        escaped = substring.replace("\\", "\\\\").replace('"', '\\"')
-        result = self.loki.search_logs(
-            LogQuery(
-                query=f'{{namespace="{scope.namespace}", pod=~"{scope.app}-.*"}} |= "{escaped}"',
-                start="-5m",
-                end="now",
-                limit=50,
-            )
-        )
+        result = self.loki.search_logs(self._log_query_builder(scope, substring))
         if any(stream.lines for stream in result.streams):
             return True
         return f"{result.total_lines} log line(s) seen, none matching" if result.streams else False

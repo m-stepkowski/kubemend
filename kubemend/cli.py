@@ -36,8 +36,7 @@ from kubemend.tools.gitops.reader import (
 from kubemend.tools.gitops.validator import Validator
 from kubemend.tools.kubernetes.factory import build_kube_client
 from kubemend.tools.kubernetes.reader import KubernetesReader, k8s_tool_spec
-from kubemend.tools.observability.loki import LokiProvider, logs_tool_spec
-from kubemend.tools.observability.prometheus import PrometheusProvider, metrics_tool_spec
+from kubemend.tools.observability.factory import ObservabilityConfigError, build_observability_tools
 from kubemend.tools.registry import ToolRegistry
 from kubemend.trace.recorder import TraceRecorder
 from kubemend.trace.replay import replay as replay_events
@@ -101,13 +100,12 @@ class ReadOnlyGate:
 
 
 def build_read_only_registry(cfg: RunConfig) -> ToolRegistry:
-    prometheus = PrometheusProvider(cfg.observability.prometheus_url)
-    loki = LokiProvider(cfg.observability.loki_url)
+    metrics_spec, logs_spec = build_observability_tools(cfg.observability)
     reader = KubernetesReader(build_kube_client(cfg.kubernetes))
     return ToolRegistry(
         [
-            metrics_tool_spec(prometheus),
-            logs_tool_spec(loki),
+            metrics_spec,
+            logs_spec,
             k8s_tool_spec(reader),
         ],
         result_token_cap=cfg.context.result_token_cap,
@@ -296,9 +294,13 @@ def run(
         typer.echo(f"could not construct an LLM client: {exc}\n{_credential_hint(cfg)}", err=True)
         raise typer.Exit(code=1) from exc
 
-    result = execute_incident(
-        cfg, incident, run_id, llm=llm, read_only=effective_read_only, lab_bin=bin_dir
-    )
+    try:
+        result = execute_incident(
+            cfg, incident, run_id, llm=llm, read_only=effective_read_only, lab_bin=bin_dir
+        )
+    except ObservabilityConfigError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
     _report(result, model_name=cfg.model.main.name)
 
 

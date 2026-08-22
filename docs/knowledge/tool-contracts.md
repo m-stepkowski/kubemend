@@ -6,7 +6,15 @@ Common executor rules (implemented once in `tools/registry.py`): JSON-Schema val
 
 ---
 
-## query_metrics  (tier: read, timeout 20s)
+`query_metrics`/`search_logs` are registered once per run, from whichever
+provider `observability.provider` selects (`kubemend/tools/observability/
+factory.py:build_observability_tools`) — a run only ever sees one provider's
+pair, never both. The tool *names* and result shapes (`MetricResult`/
+`LogResult`) are identical across providers; only the argument names and
+executor behavior below differ, since each provider's own query language is
+exposed directly rather than translated into a lowest-common-denominator DSL.
+
+## query_metrics — prometheus_loki  (tier: read, timeout 20s)
 
 ```json
 {"name": "query_metrics",
@@ -21,7 +29,22 @@ Common executor rules (implemented once in `tools/registry.py`): JSON-Schema val
 
 Executor: `/api/v1/query_range`; downsample every series to ≤ `max_points` (100) via stride; payload = `{series: [{labels, points: [[ts, val], ...]}], resolution_note}`. Empty result is **not** an error: `{series: [], hint: "no series matched; check label selectors"}`.
 
-## search_logs  (tier: read, timeout 20s)
+## query_metrics — datadog  (tier: read, timeout 20s)
+
+```json
+{"name": "query_metrics",
+ "description": "Run a Datadog metric query against the cluster's Datadog integration, e.g. avg:kubernetes.cpu.usage.total{pod_name:shop-api-*}. Narrow by tags; wide queries will be truncated.",
+ "input_schema": {"type": "object", "properties": {
+   "metric_query": {"type": "string"},
+   "start":        {"type": "string", "description": "RFC3339 or relative like -30m"},
+   "end":          {"type": "string", "description": "RFC3339 or 'now'"},
+   "step":         {"type": "string", "description": "e.g. 30s, 1m; default Datadog's own rollup"}},
+  "required": ["metric_query", "start", "end"]}}
+```
+
+Executor: POST `/api/v2/query/timeseries` (single formula/query pair, `from`/`to` in epoch ms; `step` maps to the request's `interval` in ms, omitted entirely when not given so Datadog's own rollup decides). Response is a shared time axis (`data.attributes.times`) zipped against each series' parallel value array (`data.attributes.values[i]`, `None` for a gap) and its `group_tags` (`"key:value"` strings, parsed into the `labels` dict) — `None` gap points are dropped, not kept as zero. Downsampled client-side to ≤ `max_points` afterward, same `downsample()` helper Prometheus uses. Payload shape and empty-result-is-a-hint behavior match `query_metrics — prometheus_loki` exactly. A malformed response (unexpected nesting) raises `client_error` rather than propagating a parse exception.
+
+## search_logs — prometheus_loki  (tier: read, timeout 20s)
 
 ```json
 {"name": "search_logs",
@@ -35,6 +58,21 @@ Executor: `/api/v1/query_range`; downsample every series to ≤ `max_points` (10
 ```
 
 Executor: `/loki/api/v1/query_range`; payload = `{streams: [{labels, lines: [[ts, line], ...]}], total_lines, limited: bool}`. Every line passes redaction (logs are the most likely secret-leak and injection vector).
+
+## search_logs — datadog  (tier: read, timeout 20s)
+
+```json
+{"name": "search_logs",
+ "description": "Search logs via Datadog's log search syntax, e.g. 'service:shop-api status:error'. Results over the limit are cut server-side; narrow the time range or add filters.",
+ "input_schema": {"type": "object", "properties": {
+   "log_query": {"type": "string"},
+   "start":     {"type": "string"}, "end": {"type": "string"},
+   "limit":     {"type": "integer", "maximum": 500, "default": 200},
+   "direction": {"type": "string", "enum": ["backward", "forward"], "default": "backward"}},
+  "required": ["log_query", "start", "end"]}}
+```
+
+Executor: POST `/api/v2/logs/events/search` (`filter.query`/`from`/`to` RFC3339, `sort` derived from `direction`, `page.limit` clamped to `MAX_LIMIT` (500) server-side, never trusted from the model). Datadog returns a **flat**, ungrouped list of log events rather than Loki's pre-grouped streams — events are grouped here by their sorted tag set into `LogStream`s so the payload shape matches `search_logs — prometheus_loki` exactly. `limited` is derived from the presence of a next-page cursor (`meta.page.after`), not a count comparison. Every message passes redaction, same as Loki.
 
 ## get_k8s_state  (tier: read, timeout 15s)
 

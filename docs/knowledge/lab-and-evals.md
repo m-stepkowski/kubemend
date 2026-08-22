@@ -8,6 +8,15 @@ RBAC: bootstrap generates ServiceAccount `kubemend-reader`, ClusterRole with get
 
 Endpoints for local runs are port-forwards managed by `task lab:forward` (Prometheus :9090, Loki :3100, gitea :3000, Argo :8080).
 
+Optional, not part of `lab:up`: `task lab:datadog-agent` installs a node-only
+Datadog Agent (`lab/bootstrap/values/datadog.yaml`; cluster-agent disabled —
+kube-prometheus-stack's kube-state-metrics already covers that) so the lab's
+own cluster metrics/logs report to a real Datadog org, for validating
+`DatadogProvider` (M9) against live data rather than only hand-submitted
+synthetic points. Needs `.lab/datadog-api-key` (README's "Observability
+providers"); site defaults to `datadoghq.com`, override with
+`DATADOG_SITE=datadoghq.eu task lab:datadog-agent`.
+
 ## Scenario format
 
 ```
