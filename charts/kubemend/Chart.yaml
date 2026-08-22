@@ -5,5 +5,5 @@ type: application
 version: 0.1.0
 # Bumped alongside project tags — a manual sync point, same drift risk noted
 # for the pinned tool binaries in Dockerfile/Taskfile.yaml.
-appVersion: "0.6"
+appVersion: "0.7"
 home: https://github.com/m-stepkowski/kubemend
