@@ -71,7 +71,7 @@ class ContextConfig(BaseModel):
 
 
 class ObservabilityConfig(BaseModel):
-    provider: Literal["prometheus_loki", "datadog"] = "prometheus_loki"
+    provider: Literal["prometheus_loki", "datadog", "grafana_cloud"] = "prometheus_loki"
     prometheus_url: str = "http://localhost:9090"
     loki_url: str = "http://localhost:3100"
 
@@ -81,6 +81,18 @@ class ObservabilityConfig(BaseModel):
     datadog_site: str = "datadoghq.com"
     datadog_api_key_file: Path = Path(".lab/datadog-api-key")
     datadog_app_key_file: Path = Path(".lab/datadog-app-key")
+
+    # Only used when provider == "grafana_cloud". Grafana Cloud's hosted
+    # Mimir/Loki speak the same query APIs prometheus_loki does, so this
+    # reuses PrometheusProvider/LokiProvider with HTTP Basic Auth added — the
+    # instance ID as username, one Access Policy token (shared across both)
+    # as password. URLs/instance IDs are account-specific with no sane
+    # default, unlike Datadog's enumerable sites.
+    grafana_cloud_prometheus_url: str = ""
+    grafana_cloud_prometheus_instance_id: str = ""
+    grafana_cloud_loki_url: str = ""
+    grafana_cloud_loki_instance_id: str = ""
+    grafana_cloud_token_file: Path = Path(".lab/grafana-cloud-token")
 
 
 class KubernetesConfig(BaseModel):

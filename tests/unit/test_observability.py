@@ -228,3 +228,39 @@ def test_empty_log_result_is_a_hint_not_an_error() -> None:
 
     assert result.streams == []
     assert result.hint is not None
+
+
+# -- basic auth (grafana cloud) --------------------------------------------
+
+
+def test_prometheus_forwards_auth_to_a_freshly_constructed_client() -> None:
+    auth = httpx.BasicAuth("123456", "glc_token")
+
+    provider = PrometheusProvider("http://mimir.example", auth=auth)
+
+    assert provider._client.auth is auth
+
+
+def test_loki_forwards_auth_to_a_freshly_constructed_client() -> None:
+    auth = httpx.BasicAuth("654321", "glc_token")
+
+    provider = LokiProvider("http://loki-gateway.example", auth=auth)
+
+    assert provider._client.auth is auth
+
+
+def test_prometheus_sends_a_real_basic_auth_header_when_wired_through_a_client() -> None:
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers["authorization"]
+        return httpx.Response(200, json={"status": "success", "data": {"result": []}})
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler), auth=httpx.BasicAuth("123456", "glc_token")
+    )
+    provider = PrometheusProvider("http://mimir.example", client=client, now=lambda: FIXED_NOW)
+
+    provider.query_metrics(MetricQuery("up", "-5m", "now"))
+
+    assert captured["authorization"].startswith("Basic ")

@@ -44,6 +44,21 @@ Executor: `/api/v1/query_range`; downsample every series to ≤ `max_points` (10
 
 Executor: POST `/api/v2/query/timeseries` (single formula/query pair, `from`/`to` in epoch ms; `step` maps to the request's `interval` in ms, omitted entirely when not given so Datadog's own rollup decides). Response is a shared time axis (`data.attributes.times`) zipped against each series' parallel value array (`data.attributes.values[i]`, `None` for a gap) and its `group_tags` (`"key:value"` strings, parsed into the `labels` dict) — `None` gap points are dropped, not kept as zero. Downsampled client-side to ≤ `max_points` afterward, same `downsample()` helper Prometheus uses. Payload shape and empty-result-is-a-hint behavior match `query_metrics — prometheus_loki` exactly. A malformed response (unexpected nesting) raises `client_error` rather than propagating a parse exception.
 
+## query_metrics — grafana_cloud  (tier: read, timeout 20s)
+
+```json
+{"name": "query_metrics",
+ "description": "Run a PromQL range query against the cluster's Prometheus. Prefer rate()/increase() over raw counters. Narrow by namespace/pod labels; wide queries will be truncated.",
+ "input_schema": {"type": "object", "properties": {
+   "promql": {"type": "string"},
+   "start":  {"type": "string", "description": "RFC3339 or relative like -30m"},
+   "end":    {"type": "string", "description": "RFC3339 or 'now'"},
+   "step":   {"type": "string", "description": "e.g. 30s, 1m; default auto"}},
+  "required": ["promql", "start", "end"]}}
+```
+
+Schema and executor are byte-identical to `query_metrics — prometheus_loki` — this *is* `PrometheusProvider`, pointed at Grafana Cloud's hosted Mimir instead of a self-hosted instance. Only the transport differs: HTTP Basic Auth (`grafana_cloud_prometheus_instance_id` as username, the shared Grafana Cloud Access Policy token as password), invisible to the model.
+
 ## search_logs — prometheus_loki  (tier: read, timeout 20s)
 
 ```json
@@ -73,6 +88,21 @@ Executor: `/loki/api/v1/query_range`; payload = `{streams: [{labels, lines: [[ts
 ```
 
 Executor: POST `/api/v2/logs/events/search` (`filter.query`/`from`/`to` RFC3339, `sort` derived from `direction`, `page.limit` clamped to `MAX_LIMIT` (500) server-side, never trusted from the model). Datadog returns a **flat**, ungrouped list of log events rather than Loki's pre-grouped streams — events are grouped here by their sorted tag set into `LogStream`s so the payload shape matches `search_logs — prometheus_loki` exactly. `limited` is derived from the presence of a next-page cursor (`meta.page.after`), not a count comparison. Every message passes redaction, same as Loki.
+
+## search_logs — grafana_cloud  (tier: read, timeout 20s)
+
+```json
+{"name": "search_logs",
+ "description": "Run a LogQL query against Loki. Use stream selectors ({namespace=\"x\", pod=~\"y.*\"}) plus line filters (|= \"error\"). Results over the limit are cut server-side; narrow the time range or add filters.",
+ "input_schema": {"type": "object", "properties": {
+   "logql":     {"type": "string"},
+   "start":     {"type": "string"}, "end": {"type": "string"},
+   "limit":     {"type": "integer", "maximum": 500, "default": 200},
+   "direction": {"type": "string", "enum": ["backward", "forward"], "default": "backward"}},
+  "required": ["logql", "start", "end"]}}
+```
+
+Schema and executor are byte-identical to `search_logs — prometheus_loki` — this *is* `LokiProvider`, pointed at Grafana Cloud's hosted Loki instead of a self-hosted instance. Only the transport differs: HTTP Basic Auth (`grafana_cloud_loki_instance_id` as username, the same shared Access Policy token as password used for metrics), invisible to the model.
 
 ## get_k8s_state  (tier: read, timeout 15s)
 

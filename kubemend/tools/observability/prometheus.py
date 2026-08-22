@@ -45,10 +45,11 @@ class PrometheusProvider:
         *,
         client: httpx.Client | None = None,
         timeout: float = 20.0,
+        auth: httpx.BasicAuth | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        self._client = client or httpx.Client(timeout=timeout)
+        self._client = client or httpx.Client(timeout=timeout, auth=auth)
         self._now = now or (lambda: datetime.now(UTC))
 
     def query_metrics(self, query: MetricQuery) -> MetricResult:

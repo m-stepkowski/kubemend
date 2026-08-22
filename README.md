@@ -79,15 +79,18 @@ committed baseline.
 
 `query_metrics`/`search_logs` are backed by whichever provider
 `observability.provider` selects — only one provider's tool pair is ever
-registered per run, so switching providers changes the tool argument names
-the model sees (`promql`/`logql` vs `metric_query`/`log_query`; see
-[`docs/knowledge/tool-contracts.md`](docs/knowledge/tool-contracts.md)), not
-just where the data comes from:
+registered per run. Providers with their own query language change the tool
+argument names the model sees (`promql`/`logql` vs `metric_query`/
+`log_query`; see
+[`docs/knowledge/tool-contracts.md`](docs/knowledge/tool-contracts.md));
+providers that speak real PromQL/LogQL against a hosted backend (Grafana
+Cloud) don't:
 
 | Provider | `observability.provider` | Credentials |
 |---|---|---|
 | Prometheus + Loki | `prometheus_loki` (default) | none beyond network access — the lab's read-only ServiceAccount already covers it |
 | Datadog | `datadog` | `datadog_api_key_file`/`datadog_app_key_file` (default `.lab/datadog-api-key`/`.lab/datadog-app-key`, gitignored — generate a Datadog API key and an application key with log/metric read scope and write them there, one key per file, no trailing newline needed) |
+| Grafana Cloud | `grafana_cloud` | `grafana_cloud_token_file` (default `.lab/grafana-cloud-token`, gitignored — one Grafana Cloud Access Policy token with metrics:read/logs:read scope, no trailing newline needed); `grafana_cloud_prometheus_url`/`_instance_id` and `grafana_cloud_loki_url`/`_instance_id` are account-specific with no default — copy them from your stack's connection-details page |
 
 ```yaml
 observability:
@@ -101,6 +104,21 @@ To validate the Datadog path against the lab cluster's own data instead of a
 real incident, `task lab:datadog-agent` (opt-in, not part of `lab:up`)
 installs a real Datadog Agent into the kind cluster reporting its metrics and
 logs to your org — see `DATADOG_SITE=... task lab:datadog-agent` and
+[`docs/knowledge/lab-and-evals.md`](docs/knowledge/lab-and-evals.md).
+
+```yaml
+observability:
+  provider: grafana_cloud
+  grafana_cloud_prometheus_url: https://prometheus-prod-NN-prod-xx.grafana.net
+  grafana_cloud_prometheus_instance_id: "123456"
+  grafana_cloud_loki_url: https://logs-prod-NNN.grafana.net
+  grafana_cloud_loki_instance_id: "654321"
+  grafana_cloud_token_file: .lab/grafana-cloud-token
+```
+
+Same idea for Grafana Cloud: `task lab:grafana-agent` (opt-in, not part of
+`lab:up`) installs Grafana Alloy into the kind cluster reporting the lab's
+own metrics and logs to your account — see
 [`docs/knowledge/lab-and-evals.md`](docs/knowledge/lab-and-evals.md).
 
 ## Install

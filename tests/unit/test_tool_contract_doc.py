@@ -37,9 +37,15 @@ def _specs_by_heading() -> dict[tuple[str, str], ToolSpec]:
         ("query_metrics", "datadog"): datadog_metrics_tool_spec(
             DatadogProvider(site="datadoghq.com", api_key="k", app_key="k")
         ),
+        ("query_metrics", "grafana_cloud"): prometheus_metrics_tool_spec(
+            PrometheusProvider("https://prometheus-prod-1.grafana.net")
+        ),
         ("search_logs", "prometheus_loki"): loki_logs_tool_spec(LokiProvider("http://loki:3100")),
         ("search_logs", "datadog"): datadog_logs_tool_spec(
             DatadogProvider(site="datadoghq.com", api_key="k", app_key="k")
+        ),
+        ("search_logs", "grafana_cloud"): loki_logs_tool_spec(
+            LokiProvider("https://logs-prod-1.grafana.net")
         ),
     }
 
