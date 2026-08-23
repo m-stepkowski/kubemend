@@ -74,6 +74,51 @@ job:
 goes (`gitops.backend`, `gitops.gitea_api_url`, etc.) — same shape as a
 local `kubemend.yaml` file.
 
+### Split mode (M11): per-app chart repos
+
+When `gitops.chart_repos` is set, the chart(s) live in their own repo(s),
+separate from the values repo mounted at `/workspace` above. This chart
+always mounts a second `emptyDir` at `/workspace-charts` for exactly that —
+add one init container per chart repo, cloning to `/workspace-charts/<app>`
+(the harness only ever looks for `chart_repos.checkout_root/<app>`, matching
+`checkout_root: /workspace-charts` in `config.overrides`):
+
+```yaml
+config:
+  overrides:
+    gitops:
+      repo_path: /workspace
+      chart_repos:
+        checkout_root: /workspace-charts
+        apps:
+          shop-api:
+            url: https://your-git-host/org/shop-api-chart.git
+            chart_path: "."
+
+job:
+  extraInitContainers:
+    - name: clone-gitops-repo
+      image: alpine/git:2.45.2
+      command: ["sh", "-c"]
+      args:
+        - git clone --branch main "https://x-access-token:${GIT_TOKEN}@your-git-host/org/gitops.git" /workspace
+      env:
+        - name: GIT_TOKEN
+          valueFrom: {secretKeyRef: {name: kubemend-git-token, key: token}}
+      volumeMounts:
+        - {name: workspace, mountPath: /workspace}
+    - name: clone-shop-api-chart
+      image: alpine/git:2.45.2
+      command: ["sh", "-c"]
+      args:
+        - git clone --branch main "https://x-access-token:${GIT_TOKEN}@your-git-host/org/shop-api-chart.git" /workspace-charts/shop-api
+      env:
+        - name: GIT_TOKEN
+          valueFrom: {secretKeyRef: {name: kubemend-git-token, key: token}}
+      volumeMounts:
+        - {name: chart-workspace, mountPath: /workspace-charts}
+```
+
 ## LLM credentials
 
 The image never bakes in an API key. Supply one via `job.env` or
@@ -125,6 +170,7 @@ Job without a human in the loop.
 | `job.enabled` | `false` | Gate — a plain `helm install` never spawns a Job |
 | `job.namespace` / `job.app` / `job.task` | `""` | Required when `job.enabled=true` — same meaning as `kubemend run`'s flags |
 | `job.extraInitContainers` / `extraVolumes` / `extraVolumeMounts` | `[]` | How you wire in a GitOps repo checkout (see above) |
+| *(always mounted)* `/workspace` / `/workspace-charts` | — | `emptyDir`s for the values repo and, in split mode, per-app chart checkouts — see "Split mode" above |
 | `operator.enabled` | `false` | Gate — deploys the webhook receiver + its own ServiceAccount/RBAC |
 | `operator.webhookToken` | `""` | Required when `operator.enabled=true`; render fails without it |
 | `operator.cooldownSeconds` | `300` | Minimum seconds between two triggered Jobs for the same `(namespace, app)` |

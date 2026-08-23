@@ -14,6 +14,12 @@ is a legitimate outcome: say so, name the file that would need to change, and
 stop. A precise "this cannot be fixed in values, here is why" is worth more than
 a plausible edit to the wrong file.
 
+`read_gitops_file`/`list_gitops_files` default to the values repo. If this
+app's chart lives in a separate repo from its values, pass `repo: "chart"` to
+read its templates and `Chart.yaml` instead — paths stay chart-relative
+either way. If there's no separate chart repo, `repo: "chart"` returns an
+error saying so; use the default in that case.
+
 # Scope
 
 This incident is scoped to namespace `{{ task.scope.namespace }}` and app `{{ task.scope.app }}`.

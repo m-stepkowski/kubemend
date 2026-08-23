@@ -621,3 +621,115 @@ def test_quota_check_never_runs_when_scope_already_failed(tmp_path: Path) -> Non
     assert verdict.passed is False
     assert not any(c.name == "quota" for c in verdict.checks)
     assert kube.list_resource_calls == []
+
+
+# -- split mode (M11) ------------------------------------------------------
+
+
+def _split_validator(
+    runner: ScriptedRunner, tmp_path: Path, *, chart_dirs: dict[str, Path], run_id: str = "run1"
+) -> Validator:
+    return Validator(
+        repo_path=tmp_path,
+        scope=SCOPE,
+        helm_bin=Path("/pinned/helm"),
+        kyverno_bin=Path("/pinned/kyverno"),
+        kubectl_bin=Path("/pinned/kubectl"),
+        policies_dir=Path("/repo/policies"),
+        argocd_bin=ARGOCD_BIN,
+        argocd_server="localhost:8080",
+        argocd_token="jwt-token",
+        runner=runner,
+        chart_dirs=chart_dirs,
+        run_id=run_id,
+    )
+
+
+def test_split_mode_render_passes_an_explicit_values_flag(tmp_path: Path) -> None:
+    """Single-repo mode relies on helm's implicit values.yaml pickup inside
+    the chart dir; that pickup breaks once chart and values are different
+    checkouts, so split mode must pass --values explicitly."""
+    chart_dir = tmp_path / "chart-checkout" / "shop-api"
+    runner = _rendering_runner(argocd=CommandResult(1, stdout=ARGOCD_DIFF))
+
+    _split_validator(runner, tmp_path, chart_dirs={"shop-api": chart_dir}).validate(["shop-api"])
+
+    helm_call = next(c for c in runner.calls if c[0] == "/pinned/helm")
+    assert str(chart_dir) in helm_call
+    assert "--values" in helm_call
+    values_path = helm_call[helm_call.index("--values") + 1]
+    assert values_path == str(tmp_path / "apps" / "shop-api" / "values.yaml")
+
+
+def test_single_repo_mode_never_passes_a_values_flag(tmp_path: Path) -> None:
+    """Regression guard: chart_dirs=None must render byte-for-byte like
+    before M11 — no --values flag, chart dir is repo_path/apps/<app>."""
+    runner = _rendering_runner(argocd=CommandResult(1, stdout=ARGOCD_DIFF))
+
+    _argo_validator(runner, tmp_path).validate(["shop-api"])
+
+    helm_call = next(c for c in runner.calls if c[0] == "/pinned/helm")
+    assert "--values" not in helm_call
+    assert str(tmp_path / "apps" / "shop-api") in helm_call
+
+
+def test_split_mode_render_fails_clearly_for_an_app_outside_scope(tmp_path: Path) -> None:
+    """The model wrote apps/<other-app>/values.yaml. Single-repo mode would
+    render it and let the scope check catch it; split mode never cloned that
+    app's chart, so render fails first — the detail must read as scope, not
+    as harness breakage."""
+    runner = _rendering_runner(argocd=CommandResult(1, stdout=ARGOCD_DIFF))
+
+    verdict = _split_validator(
+        runner, tmp_path, chart_dirs={"shop-api": tmp_path / "chart"}
+    ).validate(["payments-api"])
+
+    assert verdict.passed is False
+    render = next(c for c in verdict.checks if c.name == "helm_template")
+    assert render.passed is False
+    assert "no chart checkout for 'payments-api'" in render.detail
+    assert "shop-api" in render.detail
+    assert not any(c[0] == "/pinned/helm" for c in runner.calls), "must fail before shelling out"
+
+
+def test_split_mode_diff_uses_revisions_not_local(tmp_path: Path) -> None:
+    """The multi-source live Application doesn't support --local (confirmed
+    by the M11 design doc's lab spike); split mode diffs a pushed revision of
+    the values source instead."""
+    runner = _rendering_runner(argocd=CommandResult(1, stdout=ARGOCD_DIFF))
+
+    _split_validator(
+        runner, tmp_path, chart_dirs={"shop-api": tmp_path / "chart"}, run_id="20260101-abcd"
+    ).validate(["shop-api"])
+
+    argocd_call = next(c for c in runner.calls if c[0] == str(ARGOCD_BIN))
+    assert "--local" not in argocd_call
+    assert "--revisions" in argocd_call
+    assert argocd_call[argocd_call.index("--revisions") + 1] == "kubemend/20260101-abcd"
+    assert "--source-positions" in argocd_call
+    assert argocd_call[argocd_call.index("--source-positions") + 1] == "2"
+
+
+def test_split_mode_without_argocd_has_no_kubectl_fallback(tmp_path: Path) -> None:
+    """The kubectl --server-side fallback was evaluated and dropped (design
+    doc §6/§11): split mode without an Argo CD identity is a wiring problem,
+    not something to soft-degrade into a different diff mechanism."""
+    runner = _rendering_runner()
+
+    verdict = Validator(
+        repo_path=tmp_path,
+        scope=SCOPE,
+        helm_bin=Path("/pinned/helm"),
+        kyverno_bin=Path("/pinned/kyverno"),
+        kubectl_bin=Path("/pinned/kubectl"),
+        policies_dir=Path("/repo/policies"),
+        runner=runner,
+        chart_dirs={"shop-api": tmp_path / "chart"},
+        run_id="run1",
+    ).validate(["shop-api"])
+
+    assert verdict.passed is False
+    diff = next(c for c in verdict.checks if c.name == "diff")
+    assert diff.passed is False
+    assert "no kubectl fallback" in diff.detail
+    assert not any(c[0] == "/pinned/kubectl" for c in runner.calls)

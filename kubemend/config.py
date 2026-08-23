@@ -104,6 +104,30 @@ class KubernetesConfig(BaseModel):
     in_cluster: bool = False
 
 
+class ChartRepoSpec(BaseModel):
+    """One app's chart repo, in split mode (M11 design doc §2)."""
+
+    url: str
+    chart_path: str = "."
+    base_branch: str = "main"
+
+
+class ChartReposConfig(BaseModel):
+    """Split-mode chart routing (M11 design doc §2-3). Absent on `GitOpsConfig`
+    (`chart_repos: None`) means single-repo mode; presence is the only mode
+    discriminator kubemend has."""
+
+    # Where the deployment's init containers clone each app's chart to:
+    # checkout_root/<app>. In-cluster this is /workspace-charts; the relative
+    # default matches local dev, same idiom as gitops.repo_path.
+    checkout_root: Path = Path(".lab/chart-workspaces")
+    # Convention route for fleets: "https://git.corp/charts/{app}.git". An
+    # explicit `apps` entry for the same app overrides it.
+    url_template: str | None = None
+    template_chart_path: str = "."
+    apps: dict[str, ChartRepoSpec] = Field(default_factory=dict)
+
+
 class GitOpsConfig(BaseModel):
     backend: Literal["local", "gitea"] = "local"
     # Inside .lab rather than a sibling directory: the workspace is generated,
@@ -118,6 +142,12 @@ class GitOpsConfig(BaseModel):
     gitea_owner: str = "kubemend"
     gitea_repo: str = "gitops"
     gitea_token_file: Path = Path(".lab/gitea-token")
+
+    # Only used in split mode (M11): repo_path/writable_globs/base_branch
+    # above keep describing the central values repo unchanged — in split
+    # mode that repo just no longer also holds the charts. None => today's
+    # single-repo behavior, byte-for-byte; this is additive, not a migration.
+    chart_repos: ChartReposConfig | None = None
 
 
 class ArgoCdConfig(BaseModel):

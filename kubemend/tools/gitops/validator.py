@@ -167,10 +167,29 @@ class Validator:
     # need no dummy client.
     kube: KubeQuery | None = None
     runner: CommandRunner = field(default_factory=SubprocessRunner)
+    # M11 split mode: app -> the directory containing that app's chart
+    # (checkout_root/<app>/<chart_path>, resolved by routing at wiring time).
+    # None => single-repo mode, byte-for-byte today's behavior.
+    chart_dirs: Mapping[str, Path] | None = None
+    # M11 split mode only: the run's proposal branch, matching Proposer's own
+    # `f"kubemend/{run_id}"` convention exactly — needed because split mode's
+    # diff reads a pushed ref (`--revisions`), not the local working tree the
+    # way `--local` does, so unlike everything else here it needs a name, not
+    # just a path.
+    run_id: str = ""
 
     @property
     def _uses_argocd(self) -> bool:
         return bool(self.argocd_bin and self.argocd_token)
+
+    @property
+    def _split_mode(self) -> bool:
+        return self.chart_dirs is not None
+
+    def _chart_dir(self, app: str) -> Path:
+        if self.chart_dirs is None:
+            return self.repo_path / "apps" / app
+        return self.chart_dirs[app]
 
     def validate(self, apps: Sequence[str]) -> Verdict:
         """Run the five stages, stopping at the first failure.
@@ -215,13 +234,41 @@ class Validator:
     def _render(self, apps: Sequence[str]) -> tuple[str, CheckResult]:
         manifests: list[str] = []
         for app in apps:
-            chart = self.repo_path / "apps" / app
+            try:
+                chart = self._chart_dir(app)
+            except KeyError:
+                # The model wrote apps/<other-app>/values.yaml for an app
+                # outside this run's scope. Single-repo mode renders it fine
+                # and the scope check catches it afterward; in split mode the
+                # other app's chart was never cloned, so render fails first —
+                # the detail must read as scope, not as harness breakage.
+                return "", CheckResult(
+                    name="helm_template",
+                    passed=False,
+                    detail=(
+                        f"no chart checkout for {app!r}; this run's scope is {self.scope.app!r}"
+                    ),
+                )
+            values_flags: list[str] = []
+            if self._split_mode:
+                # Single-repo mode relies on helm's implicit pickup of
+                # values.yaml sitting inside the chart directory — that
+                # pickup is exactly what breaks once the chart and the
+                # values live in different checkouts, so split mode passes
+                # it explicitly. Base values.yaml only, matching
+                # single-repo's own implicit-pickup behavior exactly — env
+                # overlay files (values-prod.yaml etc.) are a pre-existing
+                # gap in both modes (ARCHITECTURE.md §5 says "base+env
+                # values"; the code has only ever rendered base), not
+                # something split mode introduces or fixes.
+                values_flags = ["--values", str(self.repo_path / "apps" / app / "values.yaml")]
             result = self.runner.run(
                 [
                     str(self.helm_bin),
                     "template",
                     app,
                     str(chart),
+                    *values_flags,
                     "--namespace",
                     self.scope.namespace,
                     "--kube-version",
@@ -276,33 +323,78 @@ class Validator:
         return CheckResult("kyverno", True, _policy_summary(result.stdout))
 
     def _diff(self, rendered: str, apps: Sequence[str]) -> tuple[str, CheckResult]:
+        if self._split_mode:
+            # The kubectl --server-side fallback was evaluated and dropped
+            # (docs/design/m11-multi-repo-gitops.md §6, §11 risk 1): the
+            # multi-source `--revisions` mechanism worked cleanly, so split
+            # mode has no fallback to fail into — an unconfigured Argo CD
+            # identity in split mode is a wiring problem, not a soft-degrade.
+            if not self._uses_argocd:
+                return "", CheckResult(
+                    name="diff",
+                    passed=False,
+                    detail=(
+                        "split mode requires the Argo CD diff path (argocd_bin + "
+                        "argocd_token); there is no kubectl fallback for a "
+                        "multi-source Application"
+                    ),
+                )
+            return self._argocd_diff(apps)
         if self._uses_argocd:
             return self._argocd_diff(apps)
         return self._kubectl_diff(rendered)
 
     def _argocd_diff(self, apps: Sequence[str]) -> tuple[str, CheckResult]:
-        """Diff each app's local chart against what Argo has live.
+        """Diff each app against what Argo has live.
 
         Argo shells out to `helm` from PATH, so PATH is pinned to the directory
         holding the Taskfile-managed binaries — otherwise the gate would render
         with whatever helm the developer happens to have installed and validate
         manifests Argo would never produce.
+
+        Single-repo mode diffs the local working tree (`--local`); split mode's
+        live Application is multi-source, which `--local` does not support
+        (confirmed by a lab spike, design doc §6/§11 risk 1), so it diffs a
+        pushed revision of the values source instead (`--revisions`,
+        `--source-positions`) — GiteaBackend's `push_on_write` (an M11 addition
+        the design doc didn't account for) is what guarantees that revision
+        already exists on the remote by the time this runs. Source position 2
+        is a split-mode deployment convention this project owns end to end
+        (this validator, the lab's own `shop-api-split.yaml` Application, and
+        the eventual chart README): the values `ref: values` source is always
+        second, the chart source always first.
         """
         env = {"PATH": f"{self.helm_bin.parent}{os.pathsep}{os.environ.get('PATH', '')}"}
         chunks: list[str] = []
         for app in apps:
-            cmd = [
-                str(self.argocd_bin),
-                "app",
-                "diff",
-                app,
-                "--local",
-                str(self.repo_path / "apps" / app),
-                "--server",
-                self.argocd_server,
-                "--auth-token",
-                self.argocd_token,
-            ]
+            if self._split_mode:
+                cmd = [
+                    str(self.argocd_bin),
+                    "app",
+                    "diff",
+                    app,
+                    "--revisions",
+                    f"kubemend/{self.run_id}",
+                    "--source-positions",
+                    "2",
+                    "--server",
+                    self.argocd_server,
+                    "--auth-token",
+                    self.argocd_token,
+                ]
+            else:
+                cmd = [
+                    str(self.argocd_bin),
+                    "app",
+                    "diff",
+                    app,
+                    "--local",
+                    str(self.repo_path / "apps" / app),
+                    "--server",
+                    self.argocd_server,
+                    "--auth-token",
+                    self.argocd_token,
+                ]
             if self.argocd_plaintext:
                 cmd.append("--plaintext")
             result = self.runner.run(cmd, cwd=self.repo_path, env=env)

@@ -1,0 +1,46 @@
+# M11 design doc §11 risk 1 spike fixture: values for the split-mode demo app
+# (chart lives in a separate gitea repo, "shop-api-chart"; this file lives in
+# the central values repo). Deliberately a copy of apps/shop-api/values.yaml's
+# shape, not a shared file — the two apps are independent Argo Applications
+# (single-source vs multi-source) so scenario-breaking either one never
+# touches the other.
+
+replicaCount: 2
+
+image:
+  repository: nginxinc/nginx-unprivileged
+  tag: "1.27-alpine"
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8080
+
+probes:
+  readiness:
+    path: /
+    initialDelaySeconds: 3
+    periodSeconds: 5
+  liveness:
+    path: /
+    initialDelaySeconds: 10
+    periodSeconds: 10
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
+
+env:
+  LOG_LEVEL: info
+  UPSTREAM_URL: http://shop-worker.shop.svc.cluster.local:9090
+
+config:
+  FEATURE_FLAGS: "checkout_v2=on"
+
+quota:
+  maxPods: 4
+
+debug:
+  logInjection: ""

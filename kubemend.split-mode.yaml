@@ -1,0 +1,59 @@
+# Split-mode (M11) lab config — same as kubemend.yaml except gitops.backend
+# and gitops.chart_repos, which only make sense together (split mode is
+# forge-backend-only per the design doc §6/§11 and cli.py's own fail-fast
+# check). Used by the shop-api-split-chart-repo acceptance scenario:
+#
+#   task evals -- -s shop-api-split-chart-repo -n 1 --model cheap \
+#     --config kubemend.split-mode.yaml
+#
+# Prerequisites: `task lab:up`, `task lab:split-mode-chart-repo`,
+# `task lab:split-mode-chart-workspace`, `task lab:workspace` (the values
+# repo clone every eval run needs regardless of mode).
+
+model:
+  main:
+    provider: anthropic
+    name: claude-sonnet-5
+    max_cost_usd_per_run: 1.00
+  cheap:
+    provider: anthropic
+    name: claude-haiku-4-5
+  pricing_table: config/pricing.yaml
+
+budgets:
+  max_iterations: 15
+  max_wall_seconds: 600
+
+context:
+  result_token_cap: 6000
+  compact_threshold: 0.70
+  model_window_tokens: 200000
+
+observability:
+  provider: prometheus_loki
+  prometheus_url: http://localhost:9090
+  loki_url: http://localhost:3100
+
+kubernetes:
+  kubeconfig: ~/.kube/kubemend-lab-readonly
+  context: kind-kubemend
+
+gitops:
+  backend: gitea
+  repo_path: .lab/gitops-workspace
+  writable_globs:
+    - "apps/**/values*.yaml"
+  base_branch: main
+  chart_repos:
+    checkout_root: .lab/chart-workspaces
+    apps:
+      shop-api-split:
+        url: http://localhost:3000/kubemend/shop-api-chart.git
+        chart_path: "."
+
+argocd:
+  server: localhost:8080
+  plaintext: true
+  token_file: .lab/argocd-token
+
+policies_dir: policies

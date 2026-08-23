@@ -58,6 +58,8 @@ spec:
               readOnly: true
             - name: workspace
               mountPath: /workspace
+            - name: chart-workspace
+              mountPath: /workspace-charts
             {{- with .Values.job.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -66,6 +68,12 @@ spec:
           configMap:
             name: {{ include "kubemend.fullname" . }}-config
         - name: workspace
+          emptyDir: {}
+        # Split mode (M11) clones each app's chart repo here, one directory
+        # per app: /workspace-charts/<app>. Unconditional — an empty emptyDir
+        # costs nothing, and single-repo deployments simply never mount an
+        # init container that writes to it.
+        - name: chart-workspace
           emptyDir: {}
         {{- with .Values.job.extraVolumes }}
         {{- toYaml . | nindent 8 }}

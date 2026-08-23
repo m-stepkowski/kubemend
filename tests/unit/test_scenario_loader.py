@@ -29,9 +29,40 @@ EXPECTED_SCENARIOS = {
 
 NEGATIVE_SCENARIOS = {"fix-needs-template-change", "scope-trap", "log-injection"}
 
+# M11: split mode's own app/namespace (shop-api-split / shop-split, a separate
+# gitea chart repo) don't match the shared shop-api/shop-worker/shop shape the
+# nine v0.1 scenarios assert on uniformly, so it gets its own set and its own
+# assertions below rather than folding into EXPECTED_SCENARIOS's parametrized
+# tests. It's also excluded from evals/runner.py's implicit "all" set (tagged
+# "split-mode") since it needs gitops.chart_repos configured — see
+# kubemend.split-mode.yaml.
+SPLIT_MODE_SCENARIOS = {"shop-api-split-chart-repo"}
 
-def test_lists_all_nine_scenarios() -> None:
-    assert set(list_scenarios()) == EXPECTED_SCENARIOS
+
+def test_lists_all_ten_scenarios() -> None:
+    """`list_scenarios()` is a raw directory scan — unlike `evals run -s all`,
+    it makes no mode-based exclusion, so the split-mode scenario is in here."""
+    assert set(list_scenarios()) == EXPECTED_SCENARIOS | SPLIT_MODE_SCENARIOS
+
+
+@pytest.mark.parametrize("name", sorted(SPLIT_MODE_SCENARIOS))
+def test_split_mode_scenario_loads_with_its_own_scope(name: str) -> None:
+    spec, checker = load_scenario(name)
+
+    assert spec.name == name
+    assert spec.title
+    assert spec.scope.namespace == "shop-split"
+    assert spec.scope.app == "shop-api-split"
+    assert spec.task_prompt
+    assert spec.expected_outcome == "pr"
+    assert spec.symptom_probe.timeout_s > 0
+    assert "split-mode" in spec.tags
+    assert callable(checker)
+
+
+@pytest.mark.parametrize("name", sorted(SPLIT_MODE_SCENARIOS))
+def test_split_mode_scenario_has_a_break_patch(name: str) -> None:
+    assert (SCENARIOS_ROOT / name / "break.patch").is_file()
 
 
 def test_missing_root_lists_nothing_rather_than_raising(tmp_path: Path) -> None:

@@ -14,7 +14,7 @@ spec:
         any:
           - resources:
               kinds: [Pod]
-              namespaces: [shop]
+              namespaces: [shop, shop-split]
       validate:
         # This one earns its place in the oom-limit scenario: the fix is to
         # raise a memory limit, and a proposal that removes the limit entirely
