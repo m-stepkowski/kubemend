@@ -42,7 +42,7 @@ from kubemend.tools.gitops.routing import (
     resolve_chart_route,
     resolve_values_route,
 )
-from kubemend.tools.gitops.validator import Validator
+from kubemend.tools.gitops.validator import DEFAULT_APP_DIR_TEMPLATE, Validator
 from kubemend.tools.kubernetes.factory import build_kube_client
 from kubemend.tools.kubernetes.reader import KubernetesReader, k8s_tool_spec
 from kubemend.tools.observability.factory import ObservabilityConfigError, build_observability_tools
@@ -229,9 +229,13 @@ def build_write_path(
         kube=build_kube_client(cfg.kubernetes),
         chart_dirs=({scope.app: chart_route.chart_dir} if chart_route is not None else None),
         run_id=run_id,
-        # Only a routed repo can describe a non-default layout; without one the
-        # Validator keeps its own default, which is the pre-M12 hardcode.
-        **({"app_dir_template": values_route.app_dir_template} if values_route else {}),
+        # Only a routed repo can describe a non-default layout. Passed
+        # explicitly rather than conditionally spliced in: a `**{...}` unpack
+        # defeats the type checker, which is what let an arg-type error sit
+        # here unnoticed behind an earlier lint failure.
+        app_dir_template=(
+            values_route.app_dir_template if values_route is not None else DEFAULT_APP_DIR_TEMPLATE
+        ),
     )
     return proposer, PipelineGate(proposer=proposer, validator=validator)
 

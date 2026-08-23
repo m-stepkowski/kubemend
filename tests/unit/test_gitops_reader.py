@@ -251,9 +251,7 @@ def test_chart_repo_no_match_listing_is_translated_to_the_models_path_space(
 
     readers = {"chart": ReaderRoute(GitOpsReader(chart_checkout), prefix="chart")}
 
-    result = list_gitops_files_spec(readers).executor(
-        {"pattern": "nowhere/**", "repo": "chart"}
-    )
+    result = list_gitops_files_spec(readers).executor({"pattern": "nowhere/**", "repo": "chart"})
 
     assert result["paths"] == []
     assert result["repository_paths"] == ["templates/deployment.yaml"]

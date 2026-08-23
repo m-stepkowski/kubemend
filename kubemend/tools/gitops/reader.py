@@ -160,6 +160,7 @@ class ReaderRoute:
         result = self.reader.list(prefix + pattern if prefix else pattern)
         if "error" in result:
             return result
+
         def unprefixed(p: str) -> str:
             return p[len(prefix) :] if prefix and p.startswith(prefix) else p
 

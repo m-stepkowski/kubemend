@@ -155,6 +155,7 @@ class ValuesRepoSpec(BaseModel):
         if "{app}" not in value:
             raise ValueError(f"app_dir_template must contain '{{app}}'; got {value!r}")
         return value
+
     # Forge coordinates for the PR call, only used when backend == "gitea".
     # Explicit rather than parsed off `url` (M12 §9 q1): an unparsed URL fails
     # loudly at wiring time, a mis-parsed one opens a PR against a real but

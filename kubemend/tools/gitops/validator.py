@@ -33,6 +33,13 @@ from kubemend.tools.base import ToolError
 # (kind, namespace, name)
 Resource = tuple[str, str, str]
 
+# The layout kubemend hardcoded before M12, in the two places this now feeds
+# (`_app_dir`, and split mode's explicit `--values` flag). Lives here rather
+# than in config.py because this module owns the behavior; `ValuesRepoSpec`
+# carries the same literal as its schema default, which is the layer that
+# documents it to a user writing kubemend.yaml.
+DEFAULT_APP_DIR_TEMPLATE = "apps/{app}"
+
 
 @dataclass(frozen=True)
 class CommandResult:
@@ -184,7 +191,7 @@ class Validator:
     # In single-repo mode this directory holds both the chart and its values;
     # in split mode the chart lives elsewhere and only values.yaml is read
     # from here — one concept either way, "this app's directory in this repo".
-    app_dir_template: str = "apps/{app}"
+    app_dir_template: str = DEFAULT_APP_DIR_TEMPLATE
 
     @property
     def _uses_argocd(self) -> bool:
