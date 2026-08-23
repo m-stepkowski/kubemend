@@ -70,8 +70,27 @@ class ContextConfig(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
 
+class PillarToggle(BaseModel):
+    """Which observability pillars a run may query (M13).
+
+    Separate from `provider`, which says *where* data comes from — this says
+    *whether* to ask at all. A disabled pillar's tool is never registered, so
+    the model never sees it: an always-erroring tool would burn iterations and
+    context discovering a backend that isn't there.
+
+    Metrics and logs default on, so every pre-M13 config behaves identically.
+    Traces default **off**: plenty of clusters run no tracing, and unlike the
+    other two there is no sane default endpoint to guess.
+    """
+
+    metrics: bool = True
+    logs: bool = True
+    traces: bool = False
+
+
 class ObservabilityConfig(BaseModel):
     provider: Literal["prometheus_loki", "datadog", "grafana_cloud"] = "prometheus_loki"
+    enable: PillarToggle = Field(default_factory=PillarToggle)
     prometheus_url: str = "http://localhost:9090"
     loki_url: str = "http://localhost:3100"
 
