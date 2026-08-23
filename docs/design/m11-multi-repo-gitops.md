@@ -167,13 +167,19 @@ Defaulting `repo` to `"values"` means every existing prompt, scenario, and trace
 replay is untouched. The parameter addition is a schema change, so per CLAUDE.md the
 same PR updates `docs/knowledge/tool-contracts.md`.
 
-`kubemend/prompts/system.md.j2` line 8's "the GitOps repository" (singular) gets a
-conditional block: in split mode the run context states that this app's chart is
-readable under `repo: "chart"`, values under the default, and that only the values
-repo is writable. Prompt change, versioned and reviewed like code per convention — no
-inline strings.
+`kubemend/prompts/system.md.j2` gains a paragraph after line 15 stating `repo: "chart"`
+is available for reading chart internals when they live in a separate repo. **Shipped
+as static, mode-agnostic text, not the conditional block originally proposed here** —
+`system.md.j2` has exactly one render call site, `core/loop.py:48`, and making the
+paragraph truly conditional on split mode would mean passing a new template variable
+through that line, contradicting this doc's own "no `core/` changes" claim (§8). Since
+`read_gitops_file(repo="chart")` already returns a clear `client_error` in single-repo
+mode (§4 above), the model gets an accurate correction the moment it tries the wrong
+thing regardless of what the prompt says up front — so static text costs little and
+keeps `core/loop.py` untouched. Prompt change, versioned and reviewed like code per
+convention — no inline strings.
 
-## 5. Write side: `proposer.py` — no code change
+## 5. Write side: `proposer.py` — no code change; `gitea_backend.py` — one addition, found during implementation
 
 `Proposer`, `is_writable`, and the `propose_git_change` schema are **unchanged**. This
 deserves its own section precisely because nothing happens in it:
@@ -195,15 +201,35 @@ deserves its own section precisely because nothing happens in it:
 `verify/gate.py` is also unchanged: `_apps_touched` maps `apps/<name>/values*.yaml`
 back to app names, and the values repo keeps that layout in split mode.
 
+**Finding, not in the original design: `GiteaBackend` needed a `push_on_write` flag.**
+§6's `--revisions` diff mechanism reads a *pushed* ref, not the local working tree —
+but tracing the actual call sequence, `write_files()` only ever commits locally; the
+only push happened in `open_draft_pr()`, called by `cli.py` **after** `gate.verify()`
+already returned `passed=True`. Circular: the diff stage that decides pass/fail needed
+the branch pushed, and pushing only happened after passing. Resolved by adding
+`push_on_write: bool = False` to `GiteaBackend.__init__` — off by default (single-repo
+mode's `--local` path is untouched, and nothing pushes mid-loop the way it did before),
+turned on by `cli.py`'s wiring (Phase 4) only when `chart_repos` is configured. When
+on, every `write_files()` call pushes immediately (`open_draft_pr`'s own push becomes a
+no-op skip, since the tip is already current). This is still `propose_git_change`'s
+only backend — no new write-capable tool, no change to *what* can be written, only
+*when* the already-committed content reaches the remote.
+
 ## 6. Validator: `validator.py`, stage by stage
 
-`Validator` keeps `repo_path` (the values repo) and gains one optional field, which is
-also its mode switch:
+`Validator` keeps `repo_path` (the values repo) and gains **two** optional fields
+(the original design named only the first — `run_id` turned out to be required too,
+see below), the first of which is also the mode switch:
 
 ```python
 # app -> directory containing that app's chart (checkout_root/<app>/<chart_path>),
 # resolved by routing at wiring time. None => single-repo mode.
 chart_dirs: Mapping[str, Path] | None = None
+# Split mode only: the run's proposal branch, matching Proposer's own
+# f"kubemend/{run_id}" convention. Needed because --revisions (below) diffs a
+# named pushed ref, unlike --local's local-working-tree comparison — the one
+# stage here that needs a name, not just a path.
+run_id: str = ""
 ```
 
 with one helper replacing the hardcoded join at `validator.py:218`:
@@ -291,6 +317,14 @@ immediately after.
    the forge — holds for `GiteaBackend` (and any real deployment) but not
    `LocalGitBackend`; split mode is therefore forge-backend-only, stated explicitly as
    a deployment requirement rather than silently unsupported.
+   **Implemented as a hardcoded convention, not auto-detected**: `_argocd_diff` always
+   passes `--source-positions 2` — it does not query the live Application spec to
+   discover which source is the values ref. Split-mode Applications must therefore put
+   the chart source first and the `ref: values` source second, always, project-wide
+   (this validator, the lab's `shop-api-split.yaml`, and the eventual chart README all
+   agree on this ordering). Querying the live spec to make this dynamic was considered
+   and rejected for M11 — it would add an `argocd app get` round-trip to every diff for
+   a case a documented convention already covers at zero runtime cost.
 2. `kubectl diff --server-side` — **not needed.** Option 1 worked cleanly; this
    fallback (and its RBAC cost — dry-run apply is authorized like a real write, so the
    read-only ServiceAccount would need a scoped grant) is dropped from the design
@@ -390,12 +424,13 @@ starts.
 | Routing | `kubemend/tools/gitops/routing.py` (new) | pure resolution + checkout validation (origin match, existence) |
 | Reader | `kubemend/tools/gitops/reader.py` | `GitOpsReader` dataclass unchanged; spec factories take a reader mapping; schemas gain optional `repo` enum; chart reads rooted at `chart_path` |
 | Proposer | `kubemend/tools/gitops/proposer.py` | **no change** |
-| Backend | `kubemend/tools/gitops/backend.py` + impls | **no change** |
+| Backend | `kubemend/tools/gitops/backend.py` | **no change** (Protocol untouched) |
+| Backend | `kubemend/tools/gitops/gitea_backend.py` | **added, not in original design**: `push_on_write` flag — split mode needs the run branch pushed before `_diff` runs, not only after a verified proposal; see §5 |
 | Gate | `kubemend/verify/gate.py` | **no change** |
-| Validator | `kubemend/tools/gitops/validator.py` | `chart_dirs` field + `_chart_dir()`; split-mode `_render` passes explicit `--values`; split-mode `_diff` per §6 spike outcome |
+| Validator | `kubemend/tools/gitops/validator.py` | `chart_dirs` **and** `run_id` fields (design named only the first — see §6) + `_chart_dir()`; split-mode `_render` passes explicit `--values`; split-mode `_diff` per §6 spike outcome, `--source-positions 2` hardcoded as a project-wide convention; split mode with no Argo CD identity fails closed, no kubectl fallback |
 | Loop / model | `kubemend/core/*` | **no change** (rule 7 upheld) |
-| Wiring | `kubemend/cli.py` | route resolution + second reader + `chart_dirs` in the two factories |
-| Prompts | `kubemend/prompts/system.md.j2` | conditional split-mode paragraph |
+| Wiring | `kubemend/cli.py` | route resolution + second reader + `chart_dirs`/`run_id` in the two factories + `push_on_write` on `GiteaBackend` construction — **not yet done, Phase 4** |
+| Prompts | `kubemend/prompts/system.md.j2` | **static** paragraph, not conditional — making it truly conditional needs a `core/loop.py` edit (the only `render()` call site), which contradicts this doc's own "no core/ changes" claim; resolved in favor of the constraint, not the conditional (§4 as shipped) |
 | Chart | `charts/kubemend/templates/job.yaml`, `charts/kubemend/README.md` | `chart-workspace` emptyDir at `/workspace-charts`; split-mode clone example |
 | Docs | `docs/knowledge/tool-contracts.md`, `docs/getting-started.md`, `ARCHITECTURE.md` §4 | `repo` param contract; split-mode setup; repo-model addendum |
 | Lab | `lab/`, `docs/knowledge/lab-and-evals.md` | second gitea repo holding a chart; a multi-source Application; the M11 acceptance scenario |

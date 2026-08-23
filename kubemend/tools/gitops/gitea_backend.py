@@ -37,12 +37,18 @@ class GiteaBackend:
         token: str,
         remote: str = "origin",
         client: httpx.Client | None = None,
+        # M11 split mode: the Argo CD multi-source diff (`--revisions`) reads a
+        # pushed ref, not the local working tree, unlike single-repo's `--local`.
+        # Off by default — single-repo mode keeps today's behavior of pushing
+        # only once a proposal is verified (open_draft_pr), never mid-loop.
+        push_on_write: bool = False,
     ) -> None:
         self._local = LocalGitBackend(repo_path)
         self.api_url = api_url.rstrip("/")
         self.owner = owner
         self.repo = repo
         self.remote = remote
+        self.push_on_write = push_on_write
         self._client = client or httpx.Client(
             timeout=20.0,
             # Header auth rather than credentials in the remote URL: a URL leaks
@@ -55,15 +61,22 @@ class GiteaBackend:
         return self._local.open_branch(base, name)
 
     def write_files(self, branch: Branch, files: dict[str, str], message: str) -> Commit:
-        return self._local.write_files(branch, files, message)
+        commit = self._local.write_files(branch, files, message)
+        if self.push_on_write:
+            self._push(branch)
+        return commit
 
-    def open_draft_pr(self, branch: Branch, title: str, body: str) -> PrRef:
+    def _push(self, branch: Branch) -> None:
         if branch.name == branch.base:
             raise ClientError(f"refusing to push the base branch '{branch.base}'")
         try:
             self._local.repo.git.push(self.remote, f"{branch.name}:{branch.name}", "--force")
         except GitCommandError as exc:
             raise TransportError(f"could not push {branch.name}: {exc}") from exc
+
+    def open_draft_pr(self, branch: Branch, title: str, body: str) -> PrRef:
+        if not self.push_on_write:
+            self._push(branch)
 
         payload = {
             "head": branch.name,
