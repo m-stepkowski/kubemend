@@ -73,6 +73,14 @@ class CheckResult:
     name: str
     passed: bool
     detail: str
+    # True when the check could not run because a *dependency* failed — an
+    # expired Argo CD token, a refused connection — rather than because the
+    # proposal was wrong (M14). Structured rather than sniffed from `detail`
+    # because the eval runner excludes these iterations from the pass rate,
+    # and a misread there silently inflates the number the whole harness
+    # exists to keep honest. Never a reason to retry (CLAUDE.md): it is
+    # flagged, not papered over.
+    infra_error: bool = False
 
 
 @dataclass(frozen=True)
@@ -87,6 +95,18 @@ class Verdict:
     passed: bool
     checks: list[CheckResult] = field(default_factory=list)
     diff_summary: DiffSummary | None = None
+
+    @property
+    def infra_error(self) -> bool:
+        """Did this verdict fail because a dependency was broken, rather than
+        because the proposal was?
+
+        The eval runner uses this to keep such an iteration out of the pass
+        rate: a run where the model proposed the right fix and the gate could
+        not check it is not a model failure, and counting it as one makes the
+        sweep quietly pessimistic.
+        """
+        return any(check.infra_error for check in self.checks)
 
 
 @dataclass(frozen=True)

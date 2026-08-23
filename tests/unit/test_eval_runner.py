@@ -20,6 +20,7 @@ from evals.models import CheckReport, SymptomProbe
 from evals.runner import (
     IterationResult,
     ScenarioSummary,
+    SweepReport,
     _p95,
     _scenarios_for_all,
     _summarize,
@@ -34,7 +35,7 @@ from kubemend.config import (
     ValuesReposConfig,
     ValuesRepoSpec,
 )
-from kubemend.core.model import RunResult, Scope, Task
+from kubemend.core.model import CheckResult, RunResult, Scope, Task, Verdict
 from kubemend.llm.client import LLMClient
 from kubemend.llm.fake import FakeLLM
 
@@ -377,3 +378,117 @@ def test_run_sweep_resets_even_when_execute_incident_raises(
         run_sweep(["s1"], 1, RunConfig(), llm=FakeLLM([]), lab=lab, scenarios_root=tmp_path)
 
     assert lab.calls == ["snapshot", "reset", "apply_break:s1", "wait_for_symptom", "reset"]
+
+
+# -- infra errors leave the denominator (M14) ------------------------------
+
+
+def _infra_iteration(scenario: str = "s") -> IterationResult:
+    """An iteration whose gate could not run — broken dependency, not a
+    broken proposal."""
+    verdict = Verdict(
+        passed=False,
+        checks=[
+            CheckResult(
+                name="diff",
+                passed=False,
+                detail="infra_error: Unauthenticated: invalid session",
+                infra_error=True,
+            )
+        ],
+    )
+    result = RunResult(
+        success=False, reason="budget_exhausted", verdict=verdict, cost_usd=0.02, iterations=4
+    )
+    return IterationResult(scenario, result, CheckReport(False, "gate verdict did not pass"), 10.0)
+
+
+def test_an_infra_failure_is_excluded_from_the_pass_rate_not_scored_zero() -> None:
+    """The whole point of M14: a run the gate could not judge says nothing
+    about the model, so counting it as a failure makes the sweep pessimistic
+    about the wrong thing."""
+    its = [_iteration("s", passed=True), _infra_iteration()]
+
+    summary = _summarize("s", its)
+
+    assert summary.n == 2
+    assert summary.scored == 1
+    assert summary.infra_errors == 1
+    assert summary.passed == 1
+    assert summary.pass_rate == 1.0, "1 of 1 scored, not 1 of 2"
+
+
+def test_an_all_infra_scenario_has_no_pass_rate_rather_than_zero() -> None:
+    summary = _summarize("s", [_infra_iteration(), _infra_iteration()])
+
+    assert summary.scored == 0
+    assert summary.pass_rate == 0.0
+    assert summary.infra_errors == 2
+
+
+def test_infra_failures_are_reported_distinctly_from_model_failures() -> None:
+    summary = _summarize("s", [_infra_iteration(), _iteration("s", passed=False)])
+
+    joined = " | ".join(summary.failures)
+    assert "infra_error (excluded from pass rate)" in joined
+    assert "property failed" in joined, "the real failure is still reported"
+
+
+def test_a_scenario_whose_iterations_were_all_infra_is_not_sent_to_prompt_triage() -> None:
+    """Below-50% triage means "diagnose the model"; an all-infra scenario
+    needs the lab fixed instead, and must not land in that section."""
+    summaries = [
+        ScenarioSummary(
+            "s",
+            n=2,
+            passed=0,
+            mean_iterations=4.0,
+            mean_cost_usd=0.02,
+            p95_wall_seconds=10.0,
+            infra_errors=2,
+        )
+    ]
+    md = render_report_md(SweepReport(model="m", summaries=summaries, iterations=[]))
+
+    assert "below 50%" not in md.lower()
+
+
+def test_the_report_surfaces_infra_errors_in_their_own_column() -> None:
+    summaries = [
+        ScenarioSummary(
+            "s",
+            n=3,
+            passed=2,
+            mean_iterations=5.0,
+            mean_cost_usd=0.02,
+            p95_wall_seconds=12.0,
+            infra_errors=1,
+        )
+    ]
+    md = render_report_md(SweepReport(model="m", summaries=summaries, iterations=[]))
+
+    assert "| infra |" in md
+    assert "2/2" in md, "passed over *scored*, not over n"
+
+
+def test_report_json_carries_scored_and_infra_counts() -> None:
+    import json
+
+    summaries = [
+        ScenarioSummary(
+            "s",
+            n=3,
+            passed=2,
+            mean_iterations=5.0,
+            mean_cost_usd=0.02,
+            p95_wall_seconds=12.0,
+            infra_errors=1,
+        )
+    ]
+    payload = json.loads(
+        render_report_json(SweepReport(model="m", summaries=summaries, iterations=[]))
+    )
+
+    assert payload["scenarios"][0]["scored"] == 2
+    assert payload["scenarios"][0]["infra_errors"] == 1
+    assert payload["scenarios"][0]["pass_rate"] == 1.0
