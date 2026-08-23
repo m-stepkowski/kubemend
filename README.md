@@ -90,7 +90,7 @@ Cloud) don't:
 
 | Provider | `observability.provider` | Credentials |
 |---|---|---|
-| Prometheus + Loki | `prometheus_loki` (default) | none beyond network access — the lab's read-only ServiceAccount already covers it. No traces: enabling `enable.traces` here fails at startup |
+| Prometheus + Loki (+ Tempo) | `prometheus_loki` (default) | none beyond network access — the lab's read-only ServiceAccount already covers it. Traces come from a self-hosted Tempo at `observability.tempo_url`; `task lab:tempo` installs one |
 | Datadog | `datadog` | `datadog_api_key_file`/`datadog_app_key_file` (default `.lab/datadog-api-key`/`.lab/datadog-app-key`, gitignored — generate a Datadog API key and an application key with log/metric read scope and write them there, one key per file, no trailing newline needed). Traces (APM span search) need no extra config — the same keys serve all three pillars |
 | Grafana Cloud | `grafana_cloud` | `grafana_cloud_token_file` (default `.lab/grafana-cloud-token`, gitignored — one Grafana Cloud Access Policy token with metrics:read/logs:read scope, no trailing newline needed); `grafana_cloud_prometheus_url`/`_instance_id` and `grafana_cloud_loki_url`/`_instance_id` are account-specific with no default — copy them from your stack's connection-details page. Traces additionally need `grafana_cloud_tempo_url`/`_instance_id` and `traces:read` on the token |
 

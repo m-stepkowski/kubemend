@@ -1,0 +1,53 @@
+# Tempo single-binary, for the lab's third observability pillar (M13).
+#
+# Deliberately minimal and ephemeral: this exists so `query_traces` can be
+# validated and exercised against a *real* Tempo — the same HTTP API Grafana
+# Cloud's hosted Tempo serves, which is the whole premise of TempoProvider
+# working against both. Nothing here is production shape.
+
+# Local storage only. Traces are disposable lab data; a PVC would just make
+# `task lab:down` slower to clean up.
+persistence:
+  enabled: false
+
+tempo:
+  # OTLP is the only ingest protocol the lab needs — the validation harness
+  # and any future instrumented demo app both speak it. Jaeger/Zipkin
+  # receivers are off to keep the surface small.
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: 0.0.0.0:4318
+        grpc:
+          endpoint: 0.0.0.0:4317
+
+  # Without this, a trace is only searchable by ID — TraceQL selectors like
+  # {resource.service.name="x"} need the local blocks to be indexed and
+  # queryable, which is exactly what the provider's /api/search path uses.
+  metricsGenerator:
+    enabled: false
+
+  # Flush aggressively so a trace pushed by a test is searchable within
+  # seconds rather than minutes. A real deployment would never want this.
+  storage:
+    trace:
+      backend: local
+      wal:
+        path: /var/tempo/wal
+      local:
+        path: /var/tempo/blocks
+
+  # Retention far shorter than any real deployment: the lab is reset often and
+  # nothing here is worth keeping.
+  retention: 1h
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+service:
+  type: ClusterIP

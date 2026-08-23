@@ -168,16 +168,39 @@ def test_traces_default_off_because_not_every_cluster_runs_tracing() -> None:
     assert ObservabilityConfig().enable.traces is False
 
 
-def test_a_pillar_the_provider_cannot_serve_fails_at_wiring_time(tmp_path: Path) -> None:
+def test_a_pillar_the_provider_cannot_serve_fails_at_wiring_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Named on both halves — which pillar, and which provider — so the fix is
-    obvious from the message alone."""
-    cfg = ObservabilityConfig(enable=PillarToggle(traces=True))
+    obvious from the message alone.
+
+    Every provider serves all three pillars as of M13 (`prometheus_loki` got
+    traces once the lab grew a Tempo), so the guard has no natural trigger
+    today. It is still the right check for the next provider added, so the
+    incomplete mapping is injected rather than the test deleted — a guard with
+    no test is how the next provider ships a silently missing pillar.
+    """
+    monkeypatch.setattr(
+        "kubemend.tools.observability.factory._specs_for_provider",
+        lambda cfg, wanted: {},
+    )
+
+    cfg = ObservabilityConfig(enable=PillarToggle(metrics=False, logs=False, traces=True))
 
     with pytest.raises(ObservabilityConfigError) as exc:
         build_observability_tools(cfg)
 
     assert "traces" in str(exc.value)
     assert "prometheus_loki" in str(exc.value)
+
+
+def test_prometheus_loki_serves_traces_from_the_lab_tempo() -> None:
+    cfg = ObservabilityConfig(enable=PillarToggle(metrics=False, logs=False, traces=True))
+
+    specs = build_observability_tools(cfg)
+
+    assert [s.name for s in specs] == ["query_traces"]
+    assert "traceql" in specs[0].parameters["properties"]
 
 
 def test_a_disabled_pillar_never_reads_that_providers_credentials(tmp_path: Path) -> None:

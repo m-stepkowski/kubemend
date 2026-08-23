@@ -117,9 +117,24 @@ Schema and executor are byte-identical to `search_logs — prometheus_loki` — 
   "required": ["traceql", "start", "end"]}}
 ```
 
-Executor: `TempoProvider`. TraceQL against `/api/search`, then one `/api/traces/<id>` fetch per hit — Tempo's search returns trace *metadata* only, never spans, which is why `limit` caps at 20 rather than the 500 the log tools allow: each result costs its own round trip inside one tool-call timeout. Transport is HTTP Basic Auth (`grafana_cloud_tempo_instance_id` as username, the same shared Access Policy token used for metrics and logs), invisible to the model. Payload `{traces: [{trace_id, root_name, duration_ms, span_count, spans: [{name, service, duration_ms, status, attributes}]}], limited, hint?}`.
+Executor: `TempoProvider`, shared by self-hosted Tempo (`observability.tempo_url`) and Grafana Cloud's hosted Tempo — identical HTTP API, the only difference being Basic Auth on the hosted side. TraceQL against `/api/search`, then one `/api/traces/<id>` fetch per hit — Tempo's search returns trace *metadata* only, never spans, which is why `limit` caps at 20 rather than the 500 the log tools allow: each result costs its own round trip inside one tool-call timeout. Transport is HTTP Basic Auth (`grafana_cloud_tempo_instance_id` as username, the same shared Access Policy token used for metrics and logs), invisible to the model. Payload `{traces: [{trace_id, root_name, duration_ms, span_count, spans: [{name, service, duration_ms, status, attributes}]}], limited, hint?}`.
 
 Spans are **flat and slowest-first, not a tree**: reconstructing parent/child in context costs tokens the model rarely spends well, and "what took the time" is the question tracing answers during an incident. Capped at 40 spans per trace. A trace whose span fetch fails degrades to metadata only rather than failing the whole call — one unreadable trace must not cost the other nineteen. Span names and attributes pass `redact_text` in the provider as well as the executor (I3), same defence in depth `search_logs` applies.
+
+## query_traces — prometheus_loki  (tier: read, timeout 30s)
+
+```json
+{"name": "query_traces",
+ "description": "Search distributed traces with TraceQL, e.g. {resource.service.name=\"shop-api\"} or {status=error}. Use this to find which downstream call is slow or failing when metrics show latency but logs do not say why. Spans come back slowest-first, not as a tree. min_duration_ms is the usual way to find the pathological requests.",
+ "input_schema": {"type": "object", "properties": {
+   "traceql":         {"type": "string"},
+   "start":           {"type": "string"}, "end": {"type": "string"},
+   "min_duration_ms": {"type": "number"},
+   "limit":           {"type": "integer", "maximum": 20, "default": 10}},
+  "required": ["traceql", "start", "end"]}}
+```
+
+Schema and executor are byte-identical to `query_traces — grafana_cloud` — this *is* `TempoProvider`, pointed at a self-hosted Tempo (`observability.tempo_url`) instead of the hosted one. Only the transport differs: no Basic Auth. `task lab:tempo` installs the Tempo the lab's own integration tests run against.
 
 ## query_traces — datadog  (tier: read, timeout 30s)
 
@@ -147,6 +162,10 @@ Two shaping differences follow from Datadog returning a flat span list rather th
 - **Datadog**: auth and endpoint path confirmed (a semantic 400, not 401/403/404), and the 400 ⇒ `ClientError`-never-retried classification confirmed against the live API. The search itself returns `"No valid indexes specified"` for every body variant tried, including explicit `filter.indexes: ["*"]`; `/api/v1/apm/services` 404s. Consistent with an org that has never enabled APM, but indistinguishable from a malformed body from outside. Response parsing **unproven**.
 
 The attribute names (`resource_name`, `parent_id`, `duration` in nanoseconds) and the `@duration` facet syntax are exactly what only survives contact with real span data. See `IMPLEMENTATION_PLAN.md` M13 — its acceptance criterion (one provider fully live-validated) is **not yet met**.
+
+**Validated end to end against a real Tempo (2026-08-23).** `tests/integration/test_lab_traces.py` pushes a trace over OTLP into the lab's Tempo and reads it back through `TempoProvider`, asserting the whole path: TraceQL search, the `/api/traces/<id>` fetch, OTLP `batches`/`scopeSpans`/`attributes` parsing, `service.name` resolution, nanosecond→ms durations, slowest-first ordering, parentless-root selection, server-side duration filtering, and redaction of a planted credential in a span attribute. Grafana Cloud's hosted Tempo was separately confirmed to answer `/api/search` with the same contract, which is why one provider class serves both.
+
+That live run found a bug the unit tests could not: Tempo's **`minDuration` query parameter is silently ignored for TraceQL searches** — a 5s floor still returned a 900ms trace. The floor is now composed into the query as a second spanset (`{...} && {duration > Nms}`), which needs no parsing of the model's own selector. The unit test that "covered" this previously asserted the parameter was *sent*, not that it was honoured.
 
 ## get_k8s_state  (tier: read, timeout 15s)
 

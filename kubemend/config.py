@@ -93,6 +93,9 @@ class ObservabilityConfig(BaseModel):
     enable: PillarToggle = Field(default_factory=PillarToggle)
     prometheus_url: str = "http://localhost:9090"
     loki_url: str = "http://localhost:3100"
+    # Self-hosted Tempo, only read when enable.traces is on (M13). The lab
+    # runs one; a cluster without tracing simply leaves enable.traces false.
+    tempo_url: str = "http://localhost:3200"
 
     # Only used when provider == "datadog". Keys are read from files rather
     # than held as plain strings, same idiom as gitea_token_file/argocd's

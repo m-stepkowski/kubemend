@@ -113,15 +113,41 @@ def test_spans_come_back_slowest_first_because_that_names_the_culprit() -> None:
     assert [s.name for s in result.traces[0].spans] == ["slowest", "middling", "fast"]
 
 
-def test_min_duration_is_sent_as_a_tempo_duration_string() -> None:
+def test_min_duration_is_composed_into_the_traceql_not_sent_as_a_parameter() -> None:
+    """Regression, found only against a real Tempo: the `minDuration` query
+    parameter is silently ignored for TraceQL searches, so a 5s floor still
+    returned a 900ms trace. The earlier version of this test asserted the
+    parameter was *sent* — which passed while the feature did nothing."""
     calls: list[httpx.Request] = []
-    provider = _provider(
-        _search_then_trace({"traces": []}, {}, calls),
+    provider = _provider(_search_then_trace({"traces": []}, {}, calls))
+
+    provider.query_traces(
+        TraceQuery(
+            query='{resource.service.name="shop-api"}', start="-30m", end="now", min_duration_ms=250
+        )
     )
 
-    provider.query_traces(TraceQuery(query="{}", start="-30m", end="now", min_duration_ms=250))
+    query = calls[0].url.params["q"]
+    assert query == '{resource.service.name="shop-api"} && {duration > 250ms}'
+    assert "minDuration" not in calls[0].url.params
 
-    assert calls[0].url.params["minDuration"] == "250ms"
+
+def test_min_duration_composes_onto_an_empty_selector() -> None:
+    calls: list[httpx.Request] = []
+    provider = _provider(_search_then_trace({"traces": []}, {}, calls))
+
+    provider.query_traces(TraceQuery(query="{}", start="-30m", end="now", min_duration_ms=500))
+
+    assert calls[0].url.params["q"] == "{} && {duration > 500ms}"
+
+
+def test_no_min_duration_leaves_the_query_untouched() -> None:
+    calls: list[httpx.Request] = []
+    provider = _provider(_search_then_trace({"traces": []}, {}, calls))
+
+    provider.query_traces(TraceQuery(query="{status=error}", start="-30m", end="now"))
+
+    assert calls[0].url.params["q"] == "{status=error}"
 
 
 def test_relative_times_are_resolved_provider_side_into_epoch_seconds() -> None:

@@ -19,7 +19,7 @@ turn them on. One provider is registered per run:
 
 | You have | `observability.provider` | metrics | logs | traces |
 |---|---|:--:|:--:|:--:|
-| Self-hosted Prometheus + Loki | `prometheus_loki` (default) | ✅ | ✅ | — |
+| Self-hosted Prometheus + Loki (+ Tempo) | `prometheus_loki` (default) | ✅ | ✅ | ✅ (Tempo) |
 | Datadog | `datadog` | ✅ | ✅ | ✅ (APM) |
 | Grafana Cloud | `grafana_cloud` | ✅ | ✅ | ✅ (Tempo) |
 
@@ -37,9 +37,11 @@ observability:
 ```
 
 The same switch works the other way — a cluster with logs but no Prometheus
-can set `metrics: false` and the model simply never sees that tool. Enabling
-a pillar your provider cannot serve (traces on `prometheus_loki`) fails at
-startup with both halves named, rather than at the first query.
+can set `metrics: false` and the model simply never sees that tool.
+
+For `prometheus_loki`, traces come from a self-hosted Tempo
+(`observability.tempo_url`, default `http://localhost:3200`); the lab runs
+one via `task lab:tempo`.
 
 Exact config fields and credential setup: README's
 ["Observability providers"](../README.md#observability-providers) section.

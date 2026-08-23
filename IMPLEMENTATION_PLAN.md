@@ -178,7 +178,7 @@ Shipped and validated live against a real `datadoghq.eu`-region Grafana Cloud ac
 
 **Reprioritized 2026-08-23** — adoption-facing gaps (an onboarding runbook, and real-world GitOps repo shapes the current single-checkout model can't handle) outrank the original ordering below. Current priority, highest first: **M10 (adopter runbook) → M11 (multi-repo, phase A) → M12 (multi-repo, phase B) → M13 (distributed tracing) → M14–M16 (the original eval-integrity/provider-parity/sandbox sequence, unchanged in content, renumbered)**.
 
-**M10, M11 and M12 shipped 2026-08-23** (v0.8 and v0.9). M13 is next.
+**M10, M11, M12 and M13 shipped 2026-08-23** (v0.8, v0.9, v0.10). M14 is next.
 
 ## M10 — Adopter runbook (shipped, v0.8)
 
@@ -223,7 +223,7 @@ Accept: same shape as M11 — design doc first (routing), then a lab-provable ca
 
 **Shipped.** `checkout-api-values-repo` passes 3/3 (gpt-4.1-mini, mean 5.7 iterations, $0.02, 59s p95), opening its PR against the routed repo and leaving the other untouched. Token liveness fixed for both gitea and argocd, each verified against a known-bad credential. Design doc: `docs/design/m12-multi-values-repos.md`. Two items deliberately left open and recorded there: `evals/runner.py`'s `_build_lab` is still not route-aware (one workspace from `gitops.repo_path`), and `values_repos.default` has unit-test coverage only. The acceptance work also surfaced a real product defect — `list_gitops_files` answered an unmatched glob with a bare empty list, giving no signal that the *prefix* was wrong — fixed by returning the repository's actual layout (§10c).
 
-## M13 — Distributed tracing as a third observability pillar (1–2 sessions)
+## M13 — Distributed tracing as a third observability pillar (shipped, v0.10)
 
 **Goal:** close the metrics/logs/traces gap — today only two of the three pillars exist.
 
@@ -231,33 +231,21 @@ Scope: a `query_traces` tool alongside `query_metrics`/`search_logs`, following 
 
 Accept: `query_traces` tool contract documented in `docs/knowledge/tool-contracts.md` alongside the existing two; at least one provider has a real, live-validated implementation (matching the M9/M9b bar — contract tests plus one manual run against a real account); the scenario/eval framework decides deliberately whether trace-based scenarios are in scope for this milestone or a follow-up (a trace-diagnosable incident is a different failure shape than the current crash-loop/OOM/bad-config scenario set).
 
-**Status: code and docs complete, live validation outstanding.**
+**Status: shipped.** Acceptance criterion met — `TempoProvider` is live-validated end to end against a real Tempo.
 
-Shipped: a per-pillar `observability.enable` toggle (`{metrics, logs, traces}`; metrics/logs default on so every pre-M13 config is unchanged, traces default off); `TempoProvider` (TraceQL, Grafana Cloud, reusing M9b's Basic Auth seam); `DatadogProvider.query_traces` (APM span search); dispatch for both in `factory.py`; contract sections for both flavours plus the drift test extended to cover them; `ARCHITECTURE.md` §3.2, README, `kubemend.yaml` and `docs/getting-started.md`.
+Shipped: a per-pillar `observability.enable` toggle (`{metrics, logs, traces}`; metrics/logs default on so every pre-M13 config is unchanged, traces default off); `TempoProvider` (TraceQL) serving both self-hosted Tempo and Grafana Cloud; `DatadogProvider.query_traces` (APM span search); dispatch for all three providers; a lab Tempo (`task lab:tempo`, part of `lab:up`); contract sections plus the drift test extended; `ARCHITECTURE.md` §3.2, README, `kubemend.yaml`, `docs/getting-started.md`.
+
+**Live validation (2026-08-23).** `tests/integration/test_lab_traces.py` pushes a trace over OTLP into the lab's Tempo and reads it back through the real provider, asserting TraceQL search, the `/api/traces/<id>` fetch, OTLP `batches`/`scopeSpans`/`attributes` parsing, `service.name` resolution, nanos→ms durations, slowest-first ordering, parentless-root selection, server-side duration filtering, and redaction of a planted credential in a span attribute. Grafana Cloud's hosted Tempo separately answered `/api/search` with the same contract, which is why one provider class covers both.
+
+That live run earned its keep immediately: **Tempo's `minDuration` parameter is silently ignored for TraceQL searches** — a 5s floor still returned a 900ms trace. Fixed by composing the floor into the query as a second spanset (`{...} && {duration > Nms}`). The unit test that "covered" this asserted the parameter was *sent*, not honoured — a check that could not fail, which is the third instance of that pattern in this session and is now called out in the test's own docstring.
 
 Two design decisions worth carrying forward:
 - Tracing sits behind its own `TracesSource` Protocol, not a third method on `ObservabilityProvider` — metrics and logs exist in every backend targeted here, tracing does not, and folding it in would oblige every provider to implement a method most cannot serve. Same reason `enable.traces` defaults off.
 - A disabled pillar registers **no tool**, rather than one that errors. An always-failing tool spends the model's iterations discovering a backend that isn't there.
 
-**Live validation attempted 2026-08-23 against both real accounts — transport proven, span shaping not.** The acceptance bar ("at least one provider live-validated") is *partially* met and is deliberately not being called done.
-
-Grafana Cloud Tempo (a real stack; endpoint and instance id deliberately not recorded here):
-- ✅ HTTP Basic Auth reaches Tempo; the existing shared Access Policy token already carries enough scope (no 401/403).
-- ✅ `/api/search` accepts the provider's `q`/`start`/`end`/`limit` params — HTTP 200, not 400.
-- ✅ The response's top-level `traces` key is exactly what `TempoProvider._get(...)` reads, and the empty-result path parses and returns its hint.
-- ❌ `/api/traces/<id>` and the OTLP `batches`/`scopeSpans`/`attributes` parsing never ran: the instance holds no traces. This is the structurally riskiest half and remains unproven.
-
-Datadog APM (`datadoghq.eu`):
-- ✅ Auth reaches Datadog (a semantic 400, not 401/403) and the endpoint path is right (not 404).
-- ✅ Error classification confirmed against the live API: 400 ⇒ `ClientError`, never retried, with Datadog's own detail surfaced.
-- ⚠️ `POST /api/v2/spans/events/search` returns `400 "Invalid query parameters: No valid indexes specified"` for **all** body variants tried, including one with explicit `filter.indexes: ["*"]`. `/api/v1/apm/services` returns 404. That is consistent with the org having no APM indexes (APM was never enabled there) rather than a malformed body — but the two cannot be distinguished from outside, and it is recorded as ambiguous rather than resolved.
-- ❌ Response parsing untested; the attribute names (`resource_name`, `parent_id`, `duration` in ns) and the `@duration:>Nms` facet syntax remain unproven.
-
-Closing the remaining gap needs real span data on either account — an instrumented service reporting via `dd-trace`, or an OTLP push into Tempo. Neither is a config tweak, and pushing synthetic telemetry into a production observability account was declined. Until then M13 is **not** shippable against its own acceptance criterion.
-
-Other outstanding items:
-1. **`prometheus_loki` traces**: still unsupported, per the M13 scope question — enabling `enable.traces` there fails at wiring time with a named error. Self-hosted Tempo in the lab remains the bigger infra lift it was judged to be; revisit if a trace-based eval scenario needs it.
-2. **Trace-based eval scenario**: not attempted. A trace-diagnosable incident is a different failure shape from the current scenario set, and without live trace data or a lab Tempo there is nothing to break. Deferred deliberately rather than half-built.
+Outstanding, deliberately scoped out:
+1. **Datadog APM is not live-validated.** Auth, endpoint and the 400⇒`ClientError`-never-retried path are confirmed against the live API, but every span search returns `"No valid indexes specified"` on an org that has never enabled APM, so the response parsing is unproven. The acceptance bar asks for *one* provider live-validated; Tempo is that provider. Revisit if a Datadog-instrumented service ever exists to test against.
+2. **Trace-based eval scenario**: not attempted. A trace-diagnosable incident is a different failure shape from the current scenario set and needs an instrumented demo app emitting spans — a scenario-design problem, not a provider one. Now unblocked by the lab Tempo; a natural follow-up milestone.
 
 ---
 

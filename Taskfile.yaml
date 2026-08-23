@@ -24,6 +24,7 @@ vars:
   GITEA_CHART_VERSION: 12.7.0
   ARGOCD_CHART_VERSION: 7.7.11
   PROMTAIL_CHART_VERSION: 6.16.6
+  TEMPO_CHART_VERSION: 1.24.4
   KYVERNO_CHART_VERSION: 3.3.4
   # M9 manual-validation only (task lab:datadog-agent, not part of lab:up).
   DATADOG_CHART_VERSION: 3.240.0
@@ -602,6 +603,21 @@ tasks:
           --values {{.ROOT_DIR}}/lab/bootstrap/values/promtail.yaml \
           --wait --timeout 5m
 
+  lab:tempo:
+    desc: "Install Tempo (single binary) so the lab has traces, the third observability pillar (M13). Part of lab:up."
+    deps: [lab:observability]
+    env:
+      KUBECONFIG: '{{.KUBECONFIG_ADMIN}}'
+    cmds:
+      - '{{.LAB_BIN}}/helm repo add grafana https://grafana.github.io/helm-charts --force-update'
+      - '{{.LAB_BIN}}/helm repo update grafana'
+      - |
+        {{.LAB_BIN}}/helm upgrade --install tempo grafana/tempo \
+          --version {{.TEMPO_CHART_VERSION}} \
+          --namespace observability --create-namespace \
+          --values {{.ROOT_DIR}}/lab/bootstrap/values/tempo.yaml \
+          --wait --timeout 5m
+
   lab:argocd-token:
     desc: Generate an Argo CD auth token for the verification gate into .lab/
     env:
@@ -817,7 +833,7 @@ tasks:
           --wait --timeout 5m
 
   lab:forward:
-    desc: Port-forward Prometheus/Loki/gitea/Argo to localhost (Ctrl-C to stop)
+    desc: Port-forward Prometheus/Loki/Tempo/gitea/Argo to localhost (Ctrl-C to stop)
     env:
       KUBECONFIG: '{{.KUBECONFIG_ADMIN}}'
     cmds:
@@ -825,9 +841,11 @@ tasks:
         set -eu
         {{.LAB_BIN}}/kubectl -n observability port-forward svc/kube-prometheus-stack-prometheus 9090:9090 &
         {{.LAB_BIN}}/kubectl -n observability port-forward svc/loki 3100:3100 &
+        {{.LAB_BIN}}/kubectl -n observability port-forward svc/tempo 3200:3200 &
+        {{.LAB_BIN}}/kubectl -n observability port-forward svc/tempo 4318:4318 &
         {{.LAB_BIN}}/kubectl -n gitea port-forward svc/gitea-http 3000:3000 &
         {{.LAB_BIN}}/kubectl -n argocd port-forward svc/argocd-server 8080:80 &
-        echo "prometheus :9090  loki :3100  gitea :3000  argocd :8080"
+        echo "prometheus :9090  loki :3100  tempo :3200 (otlp :4318)  gitea :3000  argocd :8080"
         wait
 
   lab:up:
@@ -836,6 +854,7 @@ tasks:
     cmds:
       - task: lab:observability
       - task: lab:logs
+      - task: lab:tempo
       - task: lab:gitea
       - task: lab:seed
       - task: lab:argocd

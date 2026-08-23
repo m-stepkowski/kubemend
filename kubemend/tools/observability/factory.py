@@ -69,6 +69,11 @@ def _specs_for_provider(cfg: ObservabilityConfig, wanted: list[str]) -> dict[str
             specs["metrics"] = metrics_tool_spec(PrometheusProvider(cfg.prometheus_url))
         if "logs" in wanted:
             specs["logs"] = logs_tool_spec(LokiProvider(cfg.loki_url))
+        if "traces" in wanted:
+            # Same TempoProvider Grafana Cloud uses — hosted Tempo serves the
+            # identical HTTP API, so self-hosted needs no second implementation,
+            # only the absence of Basic Auth.
+            specs["traces"] = tempo_traces_tool_spec(TempoProvider(cfg.tempo_url))
         return specs
     if cfg.provider == "datadog":
         if {"metrics", "logs", "traces"} & set(wanted):
