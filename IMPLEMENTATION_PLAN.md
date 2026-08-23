@@ -174,11 +174,13 @@ Shipped and validated live against a real `datadoghq.eu`-region Grafana Cloud ac
 
 ---
 
-# Next iterations (planned 2026-08-22, reprioritized 2026-08-23, not yet started)
+# Next iterations (planned 2026-08-22, reprioritized 2026-08-23)
 
 **Reprioritized 2026-08-23** — adoption-facing gaps (an onboarding runbook, and real-world GitOps repo shapes the current single-checkout model can't handle) outrank the original ordering below. Current priority, highest first: **M10 (adopter runbook) → M11 (multi-repo, phase A) → M12 (multi-repo, phase B) → M13 (distributed tracing) → M14–M16 (the original eval-integrity/provider-parity/sandbox sequence, unchanged in content, renumbered)**.
 
-## M10 — Adopter runbook (ASAP — top priority)
+**M10, M11 and M12 shipped 2026-08-23** (v0.8 and v0.9). M13 is next.
+
+## M10 — Adopter runbook (shipped, v0.8)
 
 **Goal:** a single ordered document a new adopter follows start to finish, not reference material they have to assemble themselves.
 
@@ -193,7 +195,7 @@ Scope: one new doc (`docs/getting-started.md`, linked prominently from README) w
 
 Accept: a person who has never read the codebase can follow the doc alone, end to end, against their own cluster, and reach either a draft PR or a `--read-only` handoff. No new code — this is a documentation milestone; if writing it surfaces a genuine UX gap (e.g., a missing flag, a config field with no good default), record that as a separate follow-up rather than scope-creeping the doc into a code change.
 
-## M11 — Multi-repo GitOps, phase A: per-app chart repos + one central values repo (multi-session; design doc first)
+## M11 — Multi-repo GitOps, phase A: per-app chart repos + one central values repo (shipped, v0.8)
 
 **Goal:** support the GitOps shape where each app's Helm chart lives in its own repo, but all apps' values live together in one central repo — a common real-world split this project has never had to handle.
 
@@ -209,7 +211,7 @@ Design doc should also state explicitly: this does *not* add a new write-capable
 
 Accept: design doc reviewed and approved before implementation starts; once implemented, a lab scenario (or a new one) proves an incident in an app whose chart lives in repo A gets a correct values-only PR opened against repo B.
 
-## M12 — Multi-repo GitOps, phase B: multiple values repos (multi-session; builds on M11)
+## M12 — Multi-repo GitOps, phase B: multiple values repos (shipped, v0.9)
 
 **Goal:** support multiple *values* repos (e.g. per-team or per-environment), not just multiple chart repos.
 
@@ -218,6 +220,8 @@ Scope: extends M11's routing concept — instead of routing only by "which chart
 Also in scope (unrelated to routing, bundled in because M11's acceptance run kept tripping over it): **lab token staleness**. `lab:workspace`'s inline gitea-token creation and `lab:argocd-token` both gate regeneration on the token *file being present* (`-f`/`-s`), never on whether it still authenticates — so a `task lab:gitea`/`task lab:argocd` helm upgrade that rotates the underlying admin session (observed twice during M11: once for argocd, once for gitea) leaves a stale cached token that fails with an opaque `invalid username, password or token` deep in a run, not at token-generation time. Fix: have both targets do a cheap liveness check against the stored token (e.g. an authenticated API call) before trusting it, regenerating on failure rather than only on absence. Split out of M14 item (2), which named only the argocd half of this same bug class.
 
 Accept: same shape as M11 — design doc first (routing), then a lab-provable case where the correct values repo (out of more than one configured) receives the PR; separately, `task lab:up` on a cluster whose gitea/argocd admin session was rotated underneath an existing token file yields working tokens with no manual `rm`.
+
+**Shipped.** `checkout-api-values-repo` passes 3/3 (gpt-4.1-mini, mean 5.7 iterations, $0.02, 59s p95), opening its PR against the routed repo and leaving the other untouched. Token liveness fixed for both gitea and argocd, each verified against a known-bad credential. Design doc: `docs/design/m12-multi-values-repos.md`. Two items deliberately left open and recorded there: `evals/runner.py`'s `_build_lab` is still not route-aware (one workspace from `gitops.repo_path`), and `values_repos.default` has unit-test coverage only. The acceptance work also surfaced a real product defect — `list_gitops_files` answered an unmatched glob with a bare empty list, giving no signal that the *prefix* was wrong — fixed by returning the repository's actual layout (§10c).
 
 ## M13 — Distributed tracing as a third observability pillar (1–2 sessions)
 
