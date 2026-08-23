@@ -1,15 +1,19 @@
-"""Chart-repo routing for split mode (M11 design doc §2-3).
+"""Repo routing: `app -> chart repo` (M11 §2-3) and `app -> values repo` (M12 §4).
 
-`resolve_chart_route` is the only place `app -> chart repo` resolution happens.
-It is a pure function called from `cli.py`'s factories at wiring time, before
-the loop starts — never from `kubemend/core/`, and never re-evaluated mid-run,
-since a run's `Scope` names exactly one app (design doc §1). Routing never
-consults anything the model produced; it keys off `Task.scope.app`, which the
-harness sets.
+`resolve_chart_route`/`resolve_values_route` are the only places those two
+resolutions happen. Both are pure functions called from `cli.py`'s factories at
+wiring time, before the loop starts — never from `kubemend/core/`, and never
+re-evaluated mid-run, since a run's `Scope` names exactly one app (M11 §1).
+Routing never consults anything the model produced; it keys off
+`Task.scope.app`, which the harness sets.
 
-Only called when `GitOpsConfig.chart_repos is not None` (split mode) — the
-caller owns that check, so this module has no single-repo-mode branch to keep
-in sync with anything.
+Each is called only when its config section is present (`chart_repos` /
+`values_repos` not None) — the caller owns that check, so this module has no
+single-repo-mode branch to keep in sync with anything.
+
+The two are deliberately *not* one combined route table: chart repos are 1:1
+with apps and values repos are N:1 (M12 §1), so they are keyed differently —
+chart checkouts by app, values checkouts by repo name.
 """
 
 from __future__ import annotations
@@ -19,13 +23,22 @@ from pathlib import Path
 
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 
-from kubemend.config import ChartReposConfig, ChartRepoSpec
+from kubemend.config import ChartReposConfig, ChartRepoSpec, ValuesReposConfig
 
 
-class ChartRouteError(RuntimeError):
-    """Split mode is configured but the route for an app can't be resolved,
-    or the checkout it resolves to isn't there or isn't the right repo.
-    Always a wiring-time failure — the run never starts."""
+class RouteError(RuntimeError):
+    """A repo route can't be resolved, or the checkout it resolves to isn't
+    there or isn't the right repo. Always a wiring-time failure — the run
+    never starts, so there is no mid-run recovery story to design for."""
+
+
+class ChartRouteError(RouteError):
+    """Split mode (M11) is configured but an app's chart repo can't be resolved."""
+
+
+class ValuesRouteError(RouteError):
+    """Multiple values repos (M12) are configured but an app's values repo
+    can't be resolved."""
 
 
 @dataclass(frozen=True)
@@ -83,7 +96,7 @@ def resolve_chart_route(app: str, cfg: ChartReposConfig) -> ChartRoute:
     # use already-absolute tmp_path checkouts. Same convention cli.py already
     # applies to gitops.repo_path.
     checkout_root = Path(cfg.checkout_root).expanduser().resolve() / app
-    _check_checkout(checkout_root, spec.url, app)
+    _check_checkout(checkout_root, spec.url, app, kind="chart", error=ChartRouteError)
     return ChartRoute(
         checkout_root=checkout_root,
         chart_path=spec.chart_path,
@@ -92,19 +105,98 @@ def resolve_chart_route(app: str, cfg: ChartReposConfig) -> ChartRoute:
     )
 
 
-def _check_checkout(checkout_root: Path, url: str, app: str) -> None:
-    """Fail-fast validation (design doc §2, "why url is in config"): catches
+def _check_checkout(
+    checkout_root: Path,
+    url: str,
+    subject: str,
+    *,
+    kind: str,
+    error: type[RouteError],
+) -> None:
+    """Fail-fast validation (M11 design doc §2, "why url is in config"): catches
     the routing bug class — right checkout directory, wrong repo cloned into
-    it — before any model tokens are spent, not partway through a render."""
+    it — before any model tokens are spent, not partway through a render.
+
+    Shared by both route kinds (M12 §4): the failure mode is identical, only
+    the noun differs. `subject` is whatever the caller keys checkouts by — an
+    app for chart repos, a repo name for values repos.
+    """
     try:
         origin = Repo(checkout_root).remotes.origin.url
     except (InvalidGitRepositoryError, NoSuchPathError) as exc:
-        raise ChartRouteError(
-            f"no chart checkout at {checkout_root} for app {app!r} (route: {url!r}) — "
+        raise error(
+            f"no {kind} checkout at {checkout_root} for {subject!r} (route: {url!r}) — "
             "the Job's init containers must clone it there before the run starts"
         ) from exc
     if origin != url:
-        raise ChartRouteError(
-            f"chart checkout at {checkout_root} for app {app!r} has origin {origin!r}, "
-            f"expected {url!r} — wrong repo cloned into this app's checkout directory"
+        raise error(
+            f"{kind} checkout at {checkout_root} for {subject!r} has origin {origin!r}, "
+            f"expected {url!r} — wrong repo cloned into this checkout directory"
         )
+
+
+# -- values repos (M12) --------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ValuesRoute:
+    """Which values repo this run writes to (M12 design doc §4).
+
+    Carries everything the write path needs that used to come straight off
+    `GitOpsConfig`: the checkout, the branch to propose against, the path
+    policy, and the forge coordinates for the PR call.
+    """
+
+    # The repo's config key. Also its checkout directory name — repos are
+    # cloned once by name, not once per app that maps to them.
+    name: str
+    checkout_root: Path
+    base_branch: str
+    url: str
+    writable_globs: list[str]
+    # None when backend == "local", which never opens a real PR.
+    gitea_owner: str | None
+    gitea_repo: str | None
+
+
+def resolve_values_route(
+    app: str, cfg: ValuesReposConfig, *, default_writable_globs: list[str]
+) -> ValuesRoute:
+    """Resolve which values repo `app`'s values live in (design doc §4).
+
+    1. `cfg.apps[app]` — an explicit entry always wins.
+    2. Else `cfg.default`.
+    3. Else a `ValuesRouteError` naming exactly what config to add.
+
+    A name that resolves to no `cfg.repos` entry is a dangling reference, not
+    a missing route: it gets its own message naming both halves, because the
+    config typo it comes from is invisible otherwise.
+    """
+    name = cfg.apps.get(app) or cfg.default
+    if name is None:
+        raise ValuesRouteError(
+            f"multiple values repos are configured but no route exists for app {app!r}; "
+            f"add gitops.values_repos.apps.{app} or set gitops.values_repos.default"
+        )
+    spec = cfg.repos.get(name)
+    if spec is None:
+        raise ValuesRouteError(
+            f"app {app!r} routes to values repo {name!r}, which is not defined in "
+            f"gitops.values_repos.repos (defined: {sorted(cfg.repos)})"
+        )
+
+    # Absolute, for the same reason chart routes are — see the comment in
+    # resolve_chart_route; the validator runs helm with a cwd of its own.
+    checkout_root = Path(cfg.checkout_root).expanduser().resolve() / name
+    _check_checkout(checkout_root, spec.url, name, kind="values repo", error=ValuesRouteError)
+    return ValuesRoute(
+        name=name,
+        checkout_root=checkout_root,
+        base_branch=spec.base_branch,
+        url=spec.url,
+        writable_globs=list(
+            spec.writable_globs if spec.writable_globs is not None else default_writable_globs
+        ),
+        gitea_owner=spec.gitea_owner,
+        gitea_repo=spec.gitea_repo,
+    )
