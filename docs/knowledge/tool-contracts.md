@@ -141,7 +141,12 @@ Two shaping differences follow from Datadog returning a flat span list rather th
 - **Grouping is the provider's job.** Spans are grouped by `trace_id`; the parentless span decides the trace's name and duration, falling back to the longest span when a page slices a trace mid-way (for "how long did this take" the two agree).
 - **`limit` means traces to the caller, spans to the API.** The request over-fetches `limit × 20` spans (capped at 500), groups, then keeps `limit` traces. `min_duration_ms` likewise has no dedicated field — it is appended to the query as a `@duration:>Nms` facet term.
 
-**Unvalidated against a live account.** Both trace flavours are written from the documented APIs and covered by wire-level tests, but neither has been run against a real Tempo or Datadog APM org. The attribute names (`resource_name`, `parent_id`, `duration` in nanoseconds) and the `@duration` facet syntax are exactly the sort of thing that only survives contact with real data — see `IMPLEMENTATION_PLAN.md` M13's acceptance criterion, which requires one provider live-validated before this is considered done.
+**Partially validated against live accounts (2026-08-23) — transport yes, span shaping no.**
+
+- **Tempo**: `/api/search` confirmed against real Grafana Cloud — Basic Auth accepted, params accepted, HTTP 200, and the response's top-level `traces` key is what the provider reads. The `/api/traces/<id>` fetch and the OTLP `batches`/`scopeSpans`/`attributes` parsing are **unproven**: the instance holds no traces.
+- **Datadog**: auth and endpoint path confirmed (a semantic 400, not 401/403/404), and the 400 ⇒ `ClientError`-never-retried classification confirmed against the live API. The search itself returns `"No valid indexes specified"` for every body variant tried, including explicit `filter.indexes: ["*"]`; `/api/v1/apm/services` 404s. Consistent with an org that has never enabled APM, but indistinguishable from a malformed body from outside. Response parsing **unproven**.
+
+The attribute names (`resource_name`, `parent_id`, `duration` in nanoseconds) and the `@duration` facet syntax are exactly what only survives contact with real span data. See `IMPLEMENTATION_PLAN.md` M13 — its acceptance criterion (one provider fully live-validated) is **not yet met**.
 
 ## get_k8s_state  (tier: read, timeout 15s)
 

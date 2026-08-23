@@ -239,10 +239,25 @@ Two design decisions worth carrying forward:
 - Tracing sits behind its own `TracesSource` Protocol, not a third method on `ObservabilityProvider` — metrics and logs exist in every backend targeted here, tracing does not, and folding it in would oblige every provider to implement a method most cannot serve. Same reason `enable.traces` defaults off.
 - A disabled pillar registers **no tool**, rather than one that errors. An always-failing tool spends the model's iterations discovering a backend that isn't there.
 
-Outstanding, and deliberately not claimed as done:
-1. **Live validation** (the acceptance bar above). Both flavours are written from documented APIs and covered by wire-level tests, but neither has run against a real Tempo or Datadog APM org. The Datadog attribute names (`resource_name`, `parent_id`, `duration` in ns) and the `@duration:>Nms` facet syntax are exactly what only survives contact with real data.
-2. **`prometheus_loki` traces**: still unsupported, per the M13 scope question — enabling `enable.traces` there fails at wiring time with a named error. Self-hosted Tempo in the lab remains the bigger infra lift it was judged to be; revisit if a trace-based eval scenario needs it.
-3. **Trace-based eval scenario**: not attempted. A trace-diagnosable incident is a different failure shape from the current scenario set, and without (1) or (2) there is no lab trace data to break. Deferred deliberately rather than half-built.
+**Live validation attempted 2026-08-23 against both real accounts — transport proven, span shaping not.** The acceptance bar ("at least one provider live-validated") is *partially* met and is deliberately not being called done.
+
+Grafana Cloud Tempo (a real stack; endpoint and instance id deliberately not recorded here):
+- ✅ HTTP Basic Auth reaches Tempo; the existing shared Access Policy token already carries enough scope (no 401/403).
+- ✅ `/api/search` accepts the provider's `q`/`start`/`end`/`limit` params — HTTP 200, not 400.
+- ✅ The response's top-level `traces` key is exactly what `TempoProvider._get(...)` reads, and the empty-result path parses and returns its hint.
+- ❌ `/api/traces/<id>` and the OTLP `batches`/`scopeSpans`/`attributes` parsing never ran: the instance holds no traces. This is the structurally riskiest half and remains unproven.
+
+Datadog APM (`datadoghq.eu`):
+- ✅ Auth reaches Datadog (a semantic 400, not 401/403) and the endpoint path is right (not 404).
+- ✅ Error classification confirmed against the live API: 400 ⇒ `ClientError`, never retried, with Datadog's own detail surfaced.
+- ⚠️ `POST /api/v2/spans/events/search` returns `400 "Invalid query parameters: No valid indexes specified"` for **all** body variants tried, including one with explicit `filter.indexes: ["*"]`. `/api/v1/apm/services` returns 404. That is consistent with the org having no APM indexes (APM was never enabled there) rather than a malformed body — but the two cannot be distinguished from outside, and it is recorded as ambiguous rather than resolved.
+- ❌ Response parsing untested; the attribute names (`resource_name`, `parent_id`, `duration` in ns) and the `@duration:>Nms` facet syntax remain unproven.
+
+Closing the remaining gap needs real span data on either account — an instrumented service reporting via `dd-trace`, or an OTLP push into Tempo. Neither is a config tweak, and pushing synthetic telemetry into a production observability account was declined. Until then M13 is **not** shippable against its own acceptance criterion.
+
+Other outstanding items:
+1. **`prometheus_loki` traces**: still unsupported, per the M13 scope question — enabling `enable.traces` there fails at wiring time with a named error. Self-hosted Tempo in the lab remains the bigger infra lift it was judged to be; revisit if a trace-based eval scenario needs it.
+2. **Trace-based eval scenario**: not attempted. A trace-diagnosable incident is a different failure shape from the current scenario set, and without live trace data or a lab Tempo there is nothing to break. Deferred deliberately rather than half-built.
 
 ---
 
