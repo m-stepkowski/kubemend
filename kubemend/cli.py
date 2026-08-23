@@ -34,6 +34,7 @@ from kubemend.tools.gitops.reader import (
     list_gitops_files_spec,
     read_gitops_file_spec,
 )
+from kubemend.tools.gitops.routing import ChartRoute, ChartRouteError, resolve_chart_route
 from kubemend.tools.gitops.validator import Validator
 from kubemend.tools.kubernetes.factory import build_kube_client
 from kubemend.tools.kubernetes.reader import KubernetesReader, k8s_tool_spec
@@ -115,14 +116,35 @@ def build_read_only_registry(cfg: RunConfig) -> ToolRegistry:
 
 
 def build_write_path(
-    cfg: RunConfig, scope: Scope, run_id: str, lab_bin: Path
+    cfg: RunConfig,
+    scope: Scope,
+    run_id: str,
+    lab_bin: Path,
+    chart_route: ChartRoute | None = None,
 ) -> tuple[Proposer, PipelineGate]:
     """Assemble the proposer, validator and gate for a run that may write.
 
     The binaries come from the Taskfile-managed directory rather than PATH: a
     developer machine here had a helm a full major version ahead of the pinned
     one, which would render different manifests than CI does.
+
+    `chart_route` is `None` in single-repo mode (today's behavior, byte-for-
+    byte) and the resolved route for `scope.app` in split mode (M11) — the
+    caller resolves it once via `resolve_chart_route`, since it is also
+    needed to build the chart `GitOpsReader` this function has no reason to
+    know about.
     """
+    if chart_route is not None and cfg.gitops.backend != "gitea":
+        # Split mode's diff reads a pushed ref (validator.py's `--revisions`,
+        # docs/design/m11-multi-repo-gitops.md §6) — LocalGitBackend never
+        # pushes at all, so there is nothing to diff against. Fail at wiring
+        # time with a clear reason, not partway through a confusing diff
+        # error.
+        raise typer.BadParameter(
+            "gitops.chart_repos is configured (split mode) but gitops.backend is "
+            f"{cfg.gitops.backend!r} — split mode's diff needs a forge backend to "
+            "push the run branch to; set gitops.backend: gitea"
+        )
     backend: GitBackend = LocalGitBackend(cfg.gitops.repo_path)
     if cfg.gitops.backend == "gitea":
         token_file = Path(cfg.gitops.gitea_token_file).expanduser()
@@ -136,6 +158,7 @@ def build_write_path(
             owner=cfg.gitops.gitea_owner,
             repo=cfg.gitops.gitea_repo,
             token=token_file.read_text().strip(),
+            push_on_write=chart_route is not None,
         )
     proposer = Proposer(
         backend=backend,
@@ -158,6 +181,8 @@ def build_write_path(
         # Same read-only identity the agent's own get_k8s_state tool uses —
         # the quota check only lists/gets, so it needs nothing more.
         kube=build_kube_client(cfg.kubernetes),
+        chart_dirs=({scope.app: chart_route.chart_dir} if chart_route is not None else None),
+        run_id=run_id,
     )
     return proposer, PipelineGate(proposer=proposer, validator=validator)
 
@@ -186,7 +211,15 @@ def execute_incident(
     proposer: Proposer | None = None
 
     if not read_only:
-        proposer, gate = build_write_path(cfg, task.scope, run_id, lab_bin.resolve())
+        chart_route: ChartRoute | None = None
+        if cfg.gitops.chart_repos is not None:
+            try:
+                chart_route = resolve_chart_route(task.scope.app, cfg.gitops.chart_repos)
+            except ChartRouteError as exc:
+                typer.echo(str(exc), err=True)
+                raise typer.Exit(code=1) from exc
+
+        proposer, gate = build_write_path(cfg, task.scope, run_id, lab_bin.resolve(), chart_route)
         # Reads are registered with the write path, not with the read-only
         # tools: without a proposer there is nothing to write and no reason to
         # put chart internals into context.
@@ -194,9 +227,12 @@ def execute_incident(
             Path(cfg.gitops.repo_path).expanduser().resolve(),
             base_branch=cfg.gitops.base_branch,
         )
-        # Split-mode chart routing (M11) lands in Phase 4; today's single-repo
-        # mode is just the values reader under the default "values" key.
         readers: dict[str, ReaderRoute] = {"values": ReaderRoute(reader)}
+        if chart_route is not None:
+            readers["chart"] = ReaderRoute(
+                GitOpsReader(chart_route.checkout_root, base_branch=chart_route.base_branch),
+                prefix=chart_route.chart_path,
+            )
         registry.register(read_gitops_file_spec(readers))
         registry.register(list_gitops_files_spec(readers))
         registry.register(propose_tool_spec(proposer))

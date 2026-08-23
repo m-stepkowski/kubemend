@@ -429,7 +429,7 @@ starts.
 | Gate | `kubemend/verify/gate.py` | **no change** |
 | Validator | `kubemend/tools/gitops/validator.py` | `chart_dirs` **and** `run_id` fields (design named only the first — see §6) + `_chart_dir()`; split-mode `_render` passes explicit `--values`; split-mode `_diff` per §6 spike outcome, `--source-positions 2` hardcoded as a project-wide convention; split mode with no Argo CD identity fails closed, no kubectl fallback |
 | Loop / model | `kubemend/core/*` | **no change** (rule 7 upheld) |
-| Wiring | `kubemend/cli.py` | route resolution + second reader + `chart_dirs`/`run_id` in the two factories + `push_on_write` on `GiteaBackend` construction — **not yet done, Phase 4** |
+| Wiring | `kubemend/cli.py` | route resolution (`execute_incident`) + second reader + `chart_dirs`/`run_id`/`push_on_write` (`build_write_path`, now takes an optional `chart_route` param); split mode + `gitops.backend != "gitea"` fails fast with a named reason |
 | Prompts | `kubemend/prompts/system.md.j2` | **static** paragraph, not conditional — making it truly conditional needs a `core/loop.py` edit (the only `render()` call site), which contradicts this doc's own "no core/ changes" claim; resolved in favor of the constraint, not the conditional (§4 as shipped) |
 | Chart | `charts/kubemend/templates/job.yaml`, `charts/kubemend/README.md` | `chart-workspace` emptyDir at `/workspace-charts`; split-mode clone example |
 | Docs | `docs/knowledge/tool-contracts.md`, `docs/getting-started.md`, `ARCHITECTURE.md` §4 | `repo` param contract; split-mode setup; repo-model addendum |
