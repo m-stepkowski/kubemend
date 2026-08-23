@@ -18,8 +18,11 @@ from kubemend.tools.base import ToolSpec
 from kubemend.tools.observability.datadog import DatadogProvider
 from kubemend.tools.observability.datadog import logs_tool_spec as datadog_logs_tool_spec
 from kubemend.tools.observability.datadog import metrics_tool_spec as datadog_metrics_tool_spec
+from kubemend.tools.observability.datadog import traces_tool_spec as datadog_traces_tool_spec
 from kubemend.tools.observability.loki import LokiProvider, logs_tool_spec
 from kubemend.tools.observability.prometheus import PrometheusProvider, metrics_tool_spec
+from kubemend.tools.observability.tempo import TempoProvider
+from kubemend.tools.observability.tempo import traces_tool_spec as tempo_traces_tool_spec
 
 
 class ObservabilityConfigError(RuntimeError):
@@ -68,7 +71,7 @@ def _specs_for_provider(cfg: ObservabilityConfig, wanted: list[str]) -> dict[str
             specs["logs"] = logs_tool_spec(LokiProvider(cfg.loki_url))
         return specs
     if cfg.provider == "datadog":
-        if {"metrics", "logs"} & set(wanted):
+        if {"metrics", "logs", "traces"} & set(wanted):
             datadog = DatadogProvider(
                 site=cfg.datadog_site,
                 api_key=_read_token(
@@ -82,6 +85,8 @@ def _specs_for_provider(cfg: ObservabilityConfig, wanted: list[str]) -> dict[str
                 specs["metrics"] = datadog_metrics_tool_spec(datadog)
             if "logs" in wanted:
                 specs["logs"] = datadog_logs_tool_spec(datadog)
+            if "traces" in wanted:
+                specs["traces"] = datadog_traces_tool_spec(datadog)
         return specs
     if cfg.provider == "grafana_cloud":
         token = _read_token(
@@ -113,6 +118,21 @@ def _specs_for_provider(cfg: ObservabilityConfig, wanted: list[str]) -> dict[str
                         _require_set(
                             cfg.grafana_cloud_loki_instance_id,
                             "observability.grafana_cloud_loki_instance_id",
+                        ),
+                        token,
+                    ),
+                )
+            )
+        if "traces" in wanted:
+            specs["traces"] = tempo_traces_tool_spec(
+                TempoProvider(
+                    _require_set(
+                        cfg.grafana_cloud_tempo_url, "observability.grafana_cloud_tempo_url"
+                    ),
+                    auth=httpx.BasicAuth(
+                        _require_set(
+                            cfg.grafana_cloud_tempo_instance_id,
+                            "observability.grafana_cloud_tempo_instance_id",
                         ),
                         token,
                     ),

@@ -194,3 +194,69 @@ def test_a_disabled_pillar_never_reads_that_providers_credentials(tmp_path: Path
     # the toggle check, before any credential file is touched.
     with pytest.raises(ObservabilityConfigError, match="enable at least one"):
         build_observability_tools(cfg)
+
+
+def test_datadog_serves_traces_when_enabled(tmp_path: Path) -> None:
+    api_key_file = tmp_path / "dd-api-key"
+    app_key_file = tmp_path / "dd-app-key"
+    api_key_file.write_text("k\n")
+    app_key_file.write_text("k\n")
+    cfg = ObservabilityConfig(
+        provider="datadog",
+        datadog_api_key_file=api_key_file,
+        datadog_app_key_file=app_key_file,
+        enable=PillarToggle(metrics=False, logs=False, traces=True),
+    )
+
+    specs = build_observability_tools(cfg)
+
+    assert [s.name for s in specs] == ["query_traces"]
+    assert "span_query" in specs[0].parameters["properties"]
+
+
+def test_grafana_cloud_serves_traces_from_tempo_when_enabled(tmp_path: Path) -> None:
+    token_file = tmp_path / "glc-token"
+    token_file.write_text("glc-secret\n")
+    cfg = ObservabilityConfig(
+        provider="grafana_cloud",
+        grafana_cloud_token_file=token_file,
+        grafana_cloud_tempo_url="https://tempo-prod.grafana.net",
+        grafana_cloud_tempo_instance_id="123456",
+        enable=PillarToggle(metrics=False, logs=False, traces=True),
+    )
+
+    specs = build_observability_tools(cfg)
+
+    assert [s.name for s in specs] == ["query_traces"]
+    assert "traceql" in specs[0].parameters["properties"]
+
+
+def test_grafana_cloud_traces_without_a_tempo_url_names_the_missing_field(tmp_path: Path) -> None:
+    token_file = tmp_path / "glc-token"
+    token_file.write_text("glc-secret\n")
+    cfg = ObservabilityConfig(
+        provider="grafana_cloud",
+        grafana_cloud_token_file=token_file,
+        enable=PillarToggle(metrics=False, logs=False, traces=True),
+    )
+
+    with pytest.raises(ObservabilityConfigError, match="grafana_cloud_tempo_url"):
+        build_observability_tools(cfg)
+
+
+def test_all_three_pillars_register_in_a_stable_order(tmp_path: Path) -> None:
+    """Registration order is what the model sees; keep it predictable."""
+    api_key_file = tmp_path / "dd-api-key"
+    app_key_file = tmp_path / "dd-app-key"
+    api_key_file.write_text("k\n")
+    app_key_file.write_text("k\n")
+    cfg = ObservabilityConfig(
+        provider="datadog",
+        datadog_api_key_file=api_key_file,
+        datadog_app_key_file=app_key_file,
+        enable=PillarToggle(metrics=True, logs=True, traces=True),
+    )
+
+    specs = build_observability_tools(cfg)
+
+    assert [s.name for s in specs] == ["query_metrics", "search_logs", "query_traces"]

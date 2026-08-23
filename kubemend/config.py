@@ -111,6 +111,11 @@ class ObservabilityConfig(BaseModel):
     grafana_cloud_prometheus_instance_id: str = ""
     grafana_cloud_loki_url: str = ""
     grafana_cloud_loki_instance_id: str = ""
+    # Tempo (M13). Only read when enable.traces is on, so an account without
+    # tracing never has to set these. Shares grafana_cloud_token_file with the
+    # other two — one Access Policy token covers all three signals.
+    grafana_cloud_tempo_url: str = ""
+    grafana_cloud_tempo_instance_id: str = ""
     grafana_cloud_token_file: Path = Path(".lab/grafana-cloud-token")
 
 
