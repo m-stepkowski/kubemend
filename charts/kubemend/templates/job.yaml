@@ -60,6 +60,8 @@ spec:
               mountPath: /workspace
             - name: chart-workspace
               mountPath: /workspace-charts
+            - name: values-workspace
+              mountPath: /workspace-values
             {{- with .Values.job.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -74,6 +76,12 @@ spec:
         # costs nothing, and single-repo deployments simply never mount an
         # init container that writes to it.
         - name: chart-workspace
+          emptyDir: {}
+        # Multi-values mode (M12) clones each *named* values repo here:
+        # /workspace-values/<repo-name>. Keyed by repo, not by app — one repo
+        # commonly holds many apps' values, so cloning per app would fetch the
+        # same repo repeatedly. Unconditional for the same reason as above.
+        - name: values-workspace
           emptyDir: {}
         {{- with .Values.job.extraVolumes }}
         {{- toYaml . | nindent 8 }}

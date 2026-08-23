@@ -6,11 +6,11 @@ repeating it. If you just want to see it work first, the lab quickstart in
 [`README.md`](../README.md#quickstart) is faster — this doc is for pointing
 kubemend at a real cluster and a real GitOps repo.
 
-Two GitOps repo shapes are supported. **Single-repo** (the default) is one
-checked-out repo holding both the app charts and their values. **Split
-mode** (M11) is chart-per-app-repo with one central values repo — see
-[`IMPLEMENTATION_PLAN.md`](../IMPLEMENTATION_PLAN.md) M12 for the
-still-unshipped multiple-values-repos shape. Step 3 below covers both.
+Three GitOps repo shapes are supported, and the last two compose. **Single-repo**
+(the default) is one checked-out repo holding both the app charts and their
+values. **Split mode** (M11) puts each app's chart in its own repo. **Multi-values
+mode** (M12) routes each app's values to one of several values repos, for
+per-team or per-environment layouts. Step 3 below covers all three.
 
 ## Step 1 — Which observability backend do you have?
 
@@ -66,7 +66,19 @@ which repo an app's chart comes from. See `charts/kubemend/README.md`'s
 "Split mode" section for the full init-container example, and
 `docs/design/m11-multi-repo-gitops.md` for the design rationale.
 
-The two things worth deciding now either way, since they're config, not
+**Multi-values mode** (`gitops.values_repos` set): each app's values are routed
+to one of several *named* repos, checked out at
+`values_repos.checkout_root/<repo-name>` (`/workspace-values` in-cluster). The
+directory is keyed by repo name rather than by app, because one repo usually
+holds many apps' values. Per repo you set `url`, the forge coordinates
+(`gitea_owner`/`gitea_repo` — required under `backend: gitea`, and never
+inferred), and optionally `writable_globs` and `app_dir_template` when that
+repo's layout differs. `apps` maps app → repo name; `default` catches the rest.
+Full example in `charts/kubemend/README.md`'s "Multi-values mode" section.
+
+This is independent of split mode — set either, both, or neither.
+
+The two things worth deciding now in any shape, since they're config, not
 code:
 
 - **`gitops.writable_globs`** (default `apps/**/values*.yaml`) — must match

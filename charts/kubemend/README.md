@@ -119,6 +119,68 @@ job:
         - {name: chart-workspace, mountPath: /workspace-charts}
 ```
 
+### Multi-values mode (M12): per-team or per-environment values repos
+
+When `gitops.values_repos` is set, each app's values are routed to one of
+several named repos. Checkouts go under `/workspace-values/<repo-name>` (the
+third `emptyDir` this chart always mounts) — keyed by **repo name, not app**,
+since one repo usually holds many apps' values and cloning per app would fetch
+the same repo repeatedly:
+
+```yaml
+config:
+  overrides:
+    gitops:
+      backend: gitea
+      values_repos:
+        checkout_root: /workspace-values
+        repos:
+          platform:
+            url: https://your-git-host/org/platform-values.git
+            gitea_owner: org
+            gitea_repo: platform-values
+          payments:
+            url: https://your-git-host/org/payments-values.git
+            gitea_owner: org
+            gitea_repo: payments-values
+            # Optional, when a repo's layout differs from the default:
+            app_dir_template: "environments/prod/{app}"
+        apps:
+          shop-api: platform
+          checkout-api: payments
+        default: platform
+
+job:
+  extraInitContainers:
+    - name: clone-platform-values
+      image: alpine/git:2.45.2
+      command: ["sh", "-c"]
+      args:
+        - git clone --branch main "https://x-access-token:${GIT_TOKEN}@your-git-host/org/platform-values.git" /workspace-values/platform
+      env:
+        - name: GIT_TOKEN
+          valueFrom: {secretKeyRef: {name: kubemend-git-token, key: token}}
+      volumeMounts:
+        - {name: values-workspace, mountPath: /workspace-values}
+    - name: clone-payments-values
+      image: alpine/git:2.45.2
+      command: ["sh", "-c"]
+      args:
+        - git clone --branch main "https://x-access-token:${GIT_TOKEN}@your-git-host/org/payments-values.git" /workspace-values/payments
+      env:
+        - name: GIT_TOKEN
+          valueFrom: {secretKeyRef: {name: kubemend-git-token, key: token}}
+      volumeMounts:
+        - {name: values-workspace, mountPath: /workspace-values}
+```
+
+`gitea_owner`/`gitea_repo` are **required per repo** when `backend: gitea` —
+the run fails at wiring time without them rather than falling back to the
+top-level coordinates, which would open the PR against a real but wrong repo.
+
+Split mode and multi-values mode are independent: set either, both, or
+neither.
+
 ## LLM credentials
 
 The image never bakes in an API key. Supply one via `job.env` or
@@ -170,7 +232,7 @@ Job without a human in the loop.
 | `job.enabled` | `false` | Gate — a plain `helm install` never spawns a Job |
 | `job.namespace` / `job.app` / `job.task` | `""` | Required when `job.enabled=true` — same meaning as `kubemend run`'s flags |
 | `job.extraInitContainers` / `extraVolumes` / `extraVolumeMounts` | `[]` | How you wire in a GitOps repo checkout (see above) |
-| *(always mounted)* `/workspace` / `/workspace-charts` | — | `emptyDir`s for the values repo and, in split mode, per-app chart checkouts — see "Split mode" above |
+| *(always mounted)* `/workspace` / `/workspace-charts` / `/workspace-values` | — | `emptyDir`s for the values repo, per-app chart checkouts (split mode), and per-repo values checkouts (multi-values mode) — see the two sections above |
 | `operator.enabled` | `false` | Gate — deploys the webhook receiver + its own ServiceAccount/RBAC |
 | `operator.webhookToken` | `""` | Required when `operator.enabled=true`; render fails without it |
 | `operator.cooldownSeconds` | `300` | Minimum seconds between two triggered Jobs for the same `(namespace, app)` |

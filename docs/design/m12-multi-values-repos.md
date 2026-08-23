@@ -280,8 +280,15 @@ regeneration path mints `kubemend-agent-<epoch>`, not a fixed name.
    the two cannot drift apart. Rejects a template lacking `{app}` at config
    load: without the placeholder every app resolves to one directory and the
    validator would render one app against another's values, silently.
-3. **Does `default` earn its keep?** Still open — decide once the acceptance
-   scenario (§10) exists and shows whether it exercises the branch.
+3. **Does `default` earn its keep?** — **RESOLVED: kept, with a caveat stated
+   plainly.** `kubemend.multi-values.yaml` maps all three apps explicitly, so
+   the acceptance sweep never exercises the `default` branch; its coverage is
+   unit tests only (`test_the_default_repo_catches_an_app_with_no_explicit_entry`,
+   `test_an_explicit_entry_wins_over_the_default`). Kept anyway because the
+   realistic fleet shape is "most apps in the main repo, a few elsewhere", and
+   the alternative is enumerating every app. Recorded here rather than quietly
+   left as-is: the earlier note said "delete if the acceptance scenario never
+   exercises it", and it doesn't.
 4. **Interaction with M11's `chart_repos.url_template`** when both sections are
    configured: no technical conflict (different tables, different keys), but the
    combined config is the first one a reader has to hold two routing models in
@@ -308,10 +315,17 @@ Concretely — extending M11's lab fixtures rather than replacing them:
 Plus, for §8: a lab where the gitea/argocd admin session has been rotated under
 an existing token file yields working tokens with no manual `rm`.
 
+**RESOLVED 2026-08-23: 3/3**, mean 5.7 iterations, $0.02, 59s p95 wall
+(`gpt-4.1-mini`, `--config kubemend.multi-values.yaml`). Every run opened its
+PR against `gitops-payments` and left `gitops` untouched. Getting there took
+three sweeps and is documented honestly in §10b — two of the three initial
+failures were defects in this fixture, and the third was a real product
+weakness M12 was the first scenario able to expose.
+
 ## 10b. Acceptance diagnosis (required by CLAUDE.md — scenario below 50%)
 
-First sweep 0/3, second 1/3. Written before any prompt or tool change, per the
-rule in `docs/knowledge/lab-and-evals.md`.
+First sweep 0/3, second 1/3, third 3/3 after the §10c fix. Written before any
+prompt or tool change, per the rule in `docs/knowledge/lab-and-evals.md`.
 
 **Routing itself is not implicated.** Every passing run took the direct path:
 `read_gitops_file apps/checkout-api/values.yaml` → `propose_git_change` →
@@ -364,10 +378,27 @@ the problem, not the wording.
 ## 10c. `list_gitops_files`: an empty match returns the repo's real layout
 
 When a glob matches nothing, the result now carries the paths the repository
-actually holds (capped), alongside the empty `paths` list. A wrong prefix
-becomes self-correcting in one turn instead of an unbounded guess loop. Contract
-change recorded in `docs/knowledge/tool-contracts.md` in the same commit, per
-CLAUDE.md.
+actually holds (capped at 200, and in split mode narrowed to the chart route
+and prefix-stripped like `paths`), alongside the empty `paths` list. A wrong
+prefix becomes self-correcting in one turn instead of an unbounded guess loop.
+Contract change recorded in `docs/knowledge/tool-contracts.md` in the same
+commit, per CLAUDE.md.
+
+**Validated by mechanism, not just by the score.** In two of the three passing
+runs the model made the *same wrong guess* it made before the fix
+(`apps/shop-payments/checkout-api/values.yaml`, and once
+`apps/shop-payments/values-checkout-api.yaml`), received the recovery listing,
+and corrected to the right path on the very next call:
+
+```
+read_gitops_file   apps/shop-payments/checkout-api/values.yaml  -> not_found
+list_gitops_files  apps/shop-payments/checkout-api/**           -> no_match + repository_paths
+read_gitops_file   apps/checkout-api/values.yaml                -> ok
+```
+
+Successful runs also got *cheaper*, not just more frequent: mean iterations
+6.7 → 5.7 and p95 wall 95s → 59s across the sweep, because a wrong first guess
+now costs one turn instead of several.
 
 ## 11. Change inventory (projected)
 
