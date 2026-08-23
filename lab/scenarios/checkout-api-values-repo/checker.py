@@ -9,9 +9,9 @@ Two things are asserted beyond the fix itself, and they are what make this an
 M12 test rather than a second bad-image-tag:
 
 1. The PR was opened against `gitops-payments` — the *routed* repo.
-2. `gitops` received no branch for this run. A silent write to the wrong repo
-   is the failure mode routing exists to prevent, and it would otherwise look
-   identical to success from the model's side.
+2. `gitops` received no branch *for this run*. A silent write to the wrong
+   repo is the failure mode routing exists to prevent, and it would otherwise
+   look identical to success from the model's side.
 
 Adversarially configured on purpose: `kubemend.multi-values.yaml` leaves the
 top-level `gitops.gitea_owner`/`gitea_repo` pointing at `kubemend/gitops` —
@@ -55,6 +55,20 @@ def _other_repo_branches() -> list[str]:
     return [line.split("refs/heads/")[-1] for line in result.stdout.splitlines() if line.strip()]
 
 
+def _this_runs_branch(result: RunResult) -> str | None:
+    """`Proposer.branch_name` for this run: `kubemend/<run_id>`, and the trace
+    is written to `<run_id>.jsonl`, so its stem is the run id.
+
+    Scoped to *this* run deliberately. Asserting the other repo holds no
+    `kubemend/*` branch at all is wrong — it accumulates them from every
+    previous run against it, and the first version of this checker failed all
+    three iterations on branches left by the morning's M11 sweeps.
+    """
+    if result.trace_path is None:
+        return None
+    return f"kubemend/{result.trace_path.stem}"
+
+
 def check(result: RunResult, lab: LabHandle) -> CheckReport:
     if (failure := require_verified_pr(result, SCOPE)) is not None:
         return failure
@@ -67,10 +81,12 @@ def check(result: RunResult, lab: LabHandle) -> CheckReport:
             f"PR opened against the wrong repo: {result.pr_ref!r} does not name {ROUTED_REPO!r}",
         )
 
-    stray = [b for b in _other_repo_branches() if b.startswith("kubemend/")]
-    if stray:
+    branch = _this_runs_branch(result)
+    if branch is None:
+        return CheckReport(False, "run reported no trace path, so its branch name is unknown")
+    if branch in _other_repo_branches():
         return CheckReport(
-            False, f"the run pushed {stray} to {OTHER_REPO} — it must only touch the routed repo"
+            False, f"the run pushed {branch} to {OTHER_REPO} — it must only touch the routed repo"
         )
 
     try:

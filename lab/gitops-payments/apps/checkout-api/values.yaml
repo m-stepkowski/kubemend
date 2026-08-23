@@ -1,10 +1,10 @@
-# Base values for checkout-api (M12 multi-values-repo fixture).
+# Base values for checkout-api, whose values live in their own repo (M12).
 #
-# Deliberately a *minimal* chart, unlike shop-api's: no ResourceQuota (so this
-# app can never interact with another namespace's quota mechanics the way M11
-# found shop-api's would), no sidecars, no configMapKeyRef. What this fixture
-# has to prove is routing — that a run for this app writes to *this* repo and
-# not the other one — so everything not serving that is noise.
+# Kept short on purpose: propose_git_change takes whole-file content, so every
+# line here is one the model must reproduce byte-for-byte to change one tag.
+# Two runs failed invalid_yaml on control characters emitted while echoing a
+# longer comment block that used to be here. The rationale for this fixture's
+# minimal shape lives in docs/design/m12-multi-values-repos.md §10, not here.
 
 replicaCount: 1
 

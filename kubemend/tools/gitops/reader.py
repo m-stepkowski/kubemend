@@ -33,6 +33,10 @@ from git import GitCommandError, Repo
 from kubemend.tools.base import ToolSpec
 
 MAX_BYTES = 64_000
+# Only ever sent when a glob matched nothing, so this is a recovery aid, not a
+# routine payload — bounded because a large monorepo's full tree would swamp
+# the context the executor is trying to keep small.
+MAX_LISTED_PATHS = 200
 
 NO_CHART_ROUTE = {
     "error": {
@@ -97,8 +101,28 @@ class GitOpsReader:
         except Exception as exc:
             return {"error": {"type": "not_found", "message": str(exc)}}
         # git already excludes .git; only the glob has to be applied.
-        paths = [p for p in listing.splitlines() if p and _matches(p, pattern)]
-        return {"pattern": pattern, "paths": sorted(paths)}
+        all_paths = sorted(p for p in listing.splitlines() if p)
+        paths = [p for p in all_paths if _matches(p, pattern)]
+        if paths:
+            return {"pattern": pattern, "paths": paths}
+        # An empty list is a dead end: it says the glob matched nothing but not
+        # that the *prefix* was wrong, so the next guess stays anchored to the
+        # same bad assumption. Two of three M12 acceptance runs died exactly
+        # that way — apps/<namespace>/<app>/... invented, then re-listed under
+        # the same wrong prefix until the loop detector fired. Answering with
+        # what the repo actually holds makes a wrong prefix self-correcting in
+        # one turn, the same way the validator's specific check details are
+        # what let the retry loop converge.
+        return {
+            "pattern": pattern,
+            "paths": [],
+            "no_match": (
+                "No path matched that glob. The repository's actual contents are listed "
+                "below — match your next pattern against these rather than re-guessing."
+            ),
+            "repository_paths": all_paths[:MAX_LISTED_PATHS],
+            "repository_paths_truncated": len(all_paths) > MAX_LISTED_PATHS,
+        }
 
 
 def _matches(path: str, pattern: str) -> bool:
@@ -136,10 +160,23 @@ class ReaderRoute:
         result = self.reader.list(prefix + pattern if prefix else pattern)
         if "error" in result:
             return result
-        paths = [
-            p[len(prefix) :] if prefix and p.startswith(prefix) else p for p in result["paths"]
-        ]
-        return {"pattern": pattern, "paths": paths}
+        def unprefixed(p: str) -> str:
+            return p[len(prefix) :] if prefix and p.startswith(prefix) else p
+
+        routed: dict[str, Any] = {
+            "pattern": pattern,
+            "paths": [unprefixed(p) for p in result["paths"]],
+        }
+        # The no-match recovery listing is model-facing too, so it needs the
+        # same translation: strip the prefix, and drop anything outside it —
+        # a chart repo whose chart sits in a subdirectory would otherwise
+        # answer a failed glob with sibling paths the model has no way to read.
+        if "no_match" in result:
+            visible = [p for p in result["repository_paths"] if not prefix or p.startswith(prefix)]
+            routed["no_match"] = result["no_match"]
+            routed["repository_paths"] = [unprefixed(p) for p in visible]
+            routed["repository_paths_truncated"] = result["repository_paths_truncated"]
+        return routed
 
 
 def read_gitops_file_spec(readers: Mapping[str, ReaderRoute]) -> ToolSpec:
@@ -200,7 +237,10 @@ def list_gitops_files_spec(readers: Mapping[str, ReaderRoute]) -> ToolSpec:
         description=(
             "List files in the GitOps repository matching a glob, e.g. 'apps/shop-api/**/*' "
             'to see a chart\'s layout before reading its templates. Pass repo: "chart" if '
-            "this app's chart lives in a separate repo from its values."
+            "this app's chart lives in a separate repo from its values. If the glob matches "
+            "nothing, the result lists what the repository actually contains — read that "
+            "listing rather than guessing another pattern. Note that a values path is keyed "
+            "by app, not by namespace."
         ),
         parameters={
             "type": "object",

@@ -308,6 +308,67 @@ Concretely — extending M11's lab fixtures rather than replacing them:
 Plus, for §8: a lab where the gitea/argocd admin session has been rotated under
 an existing token file yields working tokens with no manual `rm`.
 
+## 10b. Acceptance diagnosis (required by CLAUDE.md — scenario below 50%)
+
+First sweep 0/3, second 1/3. Written before any prompt or tool change, per the
+rule in `docs/knowledge/lab-and-evals.md`.
+
+**Routing itself is not implicated.** Every passing run took the direct path:
+`read_gitops_file apps/checkout-api/values.yaml` → `propose_git_change` →
+verified, PR against `gitops-payments`, `gitops` untouched. That is the M12
+property, and it held whenever the model got that far.
+
+Two of the three first-sweep failures were **defects in this fixture**, not the
+product:
+
+1. The checker asserted `gitops` held *no* `kubemend/*` branch at all. That repo
+   accumulates them from every prior run; it was failing on branches left by the
+   morning's M11 sweeps. Now scoped to this run's own branch, derived from
+   `result.trace_path.stem` (traces are named `<run_id>.jsonl`, and the proposer's
+   branch is `kubemend/<run_id>`).
+2. `values.yaml` carried a seven-line prose comment. `propose_git_change` takes
+   whole-file content, so every line is one the model must reproduce byte-for-byte
+   to change one tag — and it twice emitted control characters at the same offset,
+   failing `invalid_yaml`. Trimmed.
+
+**The remaining failure mode is a real product weakness, and M12 is the first
+fixture that could expose it.** Both `loop_detected` runs are identical:
+
+```
+read_gitops_file   apps/shop-payments/checkout-api/values.yaml   -> not_found
+list_gitops_files  apps/shop-payments/checkout-api/**            -> {"paths": []}
+list_gitops_files  apps/shop-payments/**/*.yaml                  -> {"paths": []}
+```
+
+The model invents a namespace segment, then re-lists under the *same wrong
+prefix* until the loop detector fires. Two things combine:
+
+- **Why here and not in the nine v0.1 scenarios**: there, namespace `shop` is a
+  prefix of app `shop-api`, so `apps/shop-api/values.yaml` incidentally "looks
+  like" it contains the namespace and a wrong guess lands right anyway. M12's
+  fixture is the first with a namespace (`shop-payments`) and app
+  (`checkout-api`) that share no substring — which is the *normal* case in a
+  real fleet, not an exotic one.
+- **Why it doesn't recover**: `list_gitops_files` answers an unmatched glob with
+  `{"paths": []}`. That is a dead end carrying no signal that the *prefix* is
+  wrong, so the model's next guess is anchored on the same bad assumption. This
+  repo's own stated principle — the validator's "specificity is what makes the
+  retry loop converge" — is exactly what the read side is missing here.
+
+Fix: make an empty match informative (§10c). Deliberately **not** fixed by
+renaming the fixture's namespace to share a prefix with its app: that would
+destroy the very property that made the defect visible, and would be papering
+over rather than fixing. Also not fixed by touching a prompt — the affordance is
+the problem, not the wording.
+
+## 10c. `list_gitops_files`: an empty match returns the repo's real layout
+
+When a glob matches nothing, the result now carries the paths the repository
+actually holds (capped), alongside the empty `paths` list. A wrong prefix
+becomes self-correcting in one turn instead of an unbounded guess loop. Contract
+change recorded in `docs/knowledge/tool-contracts.md` in the same commit, per
+CLAUDE.md.
+
 ## 11. Change inventory (projected)
 
 | Area | File(s) | Change |

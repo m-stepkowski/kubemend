@@ -171,7 +171,7 @@ and trace replay is unaffected by this parameter's addition.
 
 ```json
 {"name": "list_gitops_files",
- "description": "List files in the GitOps repository matching a glob, e.g. 'apps/shop-api/**/*' to see a chart's layout before reading its templates. Pass repo: \"chart\" if this app's chart lives in a separate repo from its values.",
+ "description": "List files in the GitOps repository matching a glob, e.g. 'apps/shop-api/**/*' to see a chart's layout before reading its templates. Pass repo: \"chart\" if this app's chart lives in a separate repo from its values. If the glob matches nothing, the result lists what the repository actually contains — read that listing rather than guessing another pattern. Note that a values path is keyed by app, not by namespace.",
  "input_schema": {"type": "object", "properties": {
    "pattern": {"type": "string", "description": "Glob relative to the repository root; defaults to **/*"},
    "repo": {"type": "string", "enum": ["values", "chart"], "default": "values", "description": "Which repo to list. \"chart\" lists this app's chart repo when it's separate from the values; if it isn't, this returns an error explaining so."}},
@@ -184,6 +184,20 @@ tools, not two variants. Listing in split mode narrows to the chart route's
 
 Executor: globs from the repository root, filters to files, excludes `.git/**`.
 Payload `{pattern, paths}`, all paths repo-relative.
+
+**No-match recovery.** When the glob matches nothing, the payload additionally
+carries `{no_match, repository_paths, repository_paths_truncated}` —
+`repository_paths` being what the repo really holds, capped at
+`reader.MAX_LISTED_PATHS` (200) and, in split mode, narrowed to the chart
+route's `chart_path` and stripped the same way `paths` is. `paths` stays `[]`.
+
+An empty list on its own is a dead end: it says the glob matched nothing, not
+that the *prefix* was wrong, so a model's next guess stays anchored to the same
+bad assumption. Two of three M12 acceptance runs died exactly that way,
+inventing `apps/<namespace>/<app>/values.yaml` and then re-listing under the
+same wrong prefix until the loop detector fired (`docs/design/m12-multi-values-repos.md`
+§10b). This is the read-side counterpart of the rule the validator already
+follows: specific failure detail is what makes the retry loop converge.
 
 ## propose_git_change  (tier: propose, timeout 30s)
 
