@@ -15,6 +15,7 @@ from kubemend.tools.base import ToolSpec
 from kubemend.tools.observability.datadog import DatadogProvider
 from kubemend.tools.observability.datadog import logs_tool_spec as datadog_logs_tool_spec
 from kubemend.tools.observability.datadog import metrics_tool_spec as datadog_metrics_tool_spec
+from kubemend.tools.observability.datadog import traces_tool_spec as datadog_traces_tool_spec
 from kubemend.tools.observability.loki import LokiProvider
 from kubemend.tools.observability.loki import logs_tool_spec as loki_logs_tool_spec
 from kubemend.tools.observability.prometheus import (
@@ -23,6 +24,8 @@ from kubemend.tools.observability.prometheus import (
 from kubemend.tools.observability.prometheus import (
     metrics_tool_spec as prometheus_metrics_tool_spec,
 )
+from kubemend.tools.observability.tempo import TempoProvider
+from kubemend.tools.observability.tempo import traces_tool_spec as tempo_traces_tool_spec
 
 DOC_PATH = Path(__file__).resolve().parents[2] / "docs" / "knowledge" / "tool-contracts.md"
 
@@ -46,6 +49,12 @@ def _specs_by_heading() -> dict[tuple[str, str], ToolSpec]:
         ),
         ("search_logs", "grafana_cloud"): loki_logs_tool_spec(
             LokiProvider("https://logs-prod-1.grafana.net")
+        ),
+        ("query_traces", "grafana_cloud"): tempo_traces_tool_spec(
+            TempoProvider("https://tempo-prod-1.grafana.net")
+        ),
+        ("query_traces", "datadog"): datadog_traces_tool_spec(
+            DatadogProvider(site="datadoghq.com", api_key="k", app_key="k")
         ),
     }
 

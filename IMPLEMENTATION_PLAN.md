@@ -231,6 +231,19 @@ Scope: a `query_traces` tool alongside `query_metrics`/`search_logs`, following 
 
 Accept: `query_traces` tool contract documented in `docs/knowledge/tool-contracts.md` alongside the existing two; at least one provider has a real, live-validated implementation (matching the M9/M9b bar — contract tests plus one manual run against a real account); the scenario/eval framework decides deliberately whether trace-based scenarios are in scope for this milestone or a follow-up (a trace-diagnosable incident is a different failure shape than the current crash-loop/OOM/bad-config scenario set).
 
+**Status: code and docs complete, live validation outstanding.**
+
+Shipped: a per-pillar `observability.enable` toggle (`{metrics, logs, traces}`; metrics/logs default on so every pre-M13 config is unchanged, traces default off); `TempoProvider` (TraceQL, Grafana Cloud, reusing M9b's Basic Auth seam); `DatadogProvider.query_traces` (APM span search); dispatch for both in `factory.py`; contract sections for both flavours plus the drift test extended to cover them; `ARCHITECTURE.md` §3.2, README, `kubemend.yaml` and `docs/getting-started.md`.
+
+Two design decisions worth carrying forward:
+- Tracing sits behind its own `TracesSource` Protocol, not a third method on `ObservabilityProvider` — metrics and logs exist in every backend targeted here, tracing does not, and folding it in would oblige every provider to implement a method most cannot serve. Same reason `enable.traces` defaults off.
+- A disabled pillar registers **no tool**, rather than one that errors. An always-failing tool spends the model's iterations discovering a backend that isn't there.
+
+Outstanding, and deliberately not claimed as done:
+1. **Live validation** (the acceptance bar above). Both flavours are written from documented APIs and covered by wire-level tests, but neither has run against a real Tempo or Datadog APM org. The Datadog attribute names (`resource_name`, `parent_id`, `duration` in ns) and the `@duration:>Nms` facet syntax are exactly what only survives contact with real data.
+2. **`prometheus_loki` traces**: still unsupported, per the M13 scope question — enabling `enable.traces` there fails at wiring time with a named error. Self-hosted Tempo in the lab remains the bigger infra lift it was judged to be; revisit if a trace-based eval scenario needs it.
+3. **Trace-based eval scenario**: not attempted. A trace-diagnosable incident is a different failure shape from the current scenario set, and without (1) or (2) there is no lab trace data to break. Deferred deliberately rather than half-built.
+
 ---
 
 ## M14 — Eval integrity + cheap-tier baseline (1 session)

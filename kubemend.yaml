@@ -81,6 +81,13 @@ observability:
   #   grafana_cloud_loki_url: https://logs-prod-NNN.grafana.net
   #   grafana_cloud_loki_instance_id: "654321"
   #   grafana_cloud_token_file: .lab/grafana-cloud-token
+  # Tempo, only needed when enable.traces is true (one Access Policy token
+  # covers all three signals, so token_file above is reused):
+  #   grafana_cloud_tempo_url: https://tempo-prod-NN-prod-xx.grafana.net
+  #   grafana_cloud_tempo_instance_id: "112233"
+  #
+  # Traces on Datadog need no extra endpoint config — APM span search uses the
+  # same api/app keys as metrics and logs; just set enable.traces: true.
   #
   # One shared Access Policy token for both, unlike Datadog's two separate
   # keys — same file-based idiom as datadog_api_key_file above.
