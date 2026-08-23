@@ -164,9 +164,93 @@ Finally, ran the full pipeline live end-to-end: `task lab:up` against the kind l
 
 ---
 
-## M10 — Sandbox execution substrate (multi-session; not planned in detail here)
+## M9b — Grafana Cloud observability provider (shipped, with M9 in v0.7)
 
-Per-run isolated tool execution replacing direct executor calls (the Option A platform work: agent-sandbox + a Kyverno pack, Go controllers) — deferred behind M7–M9 rather than first, since opening the tool to more models and making it runnable outside the lab are the more immediate blockers to anyone else trying it. Then chart-editing behind a new risk gate. Each phase is its own blog post; the sandbox phase is KubeCon-CFP-scale work, not a milestone to bolt onto an existing session.
+**Goal:** a third `ObservabilityProvider` — and the counter-case to M9: where Datadog proved the seam by requiring a whole new client, Grafana Cloud proved it by requiring almost nothing.
+
+Scope: Grafana Cloud's hosted Mimir/Loki are wire-compatible with the same `/api/v1/query_range`/`/loki/api/v1/query_range` APIs, so no new provider class — `PrometheusProvider`/`LokiProvider` gained an `auth: httpx.BasicAuth | None` constructor param (instance ID as username, one shared Access Policy token as password, token file-based like every other credential). `ObservabilityConfig` gained `grafana_cloud_*` fields (URLs/instance IDs default empty — account-specific, no sane default — validated non-empty by the factory's `_require_set`). Tool schemas are byte-identical to `prometheus_loki` (`promql`/`logql`, not renamed) since it's real PromQL/LogQL. Opt-in `task lab:grafana-agent` installs Grafana Alloy (single `deployment`, not a DaemonSet — `discovery.kubernetes` + `prometheus.scrape` + `loki.source.kubernetes` all work over the API server, no hostPath) with account values injected via `alloy.extraEnv` + Alloy's `sys.env()`, never written into the committed values file.
+
+Shipped and validated live against a real `datadoghq.eu`-region Grafana Cloud account: real lab-cluster metrics (`up` series) and logs (tagged `namespace`/`pod`/`container` by the Alloy relabel rules, deliberately matching the lab Loki schema) round-tripped correctly through the unchanged providers.
+
+---
+
+# Next iterations (planned 2026-08-22, reprioritized 2026-08-23, not yet started)
+
+**Reprioritized 2026-08-23** — adoption-facing gaps (an onboarding runbook, and real-world GitOps repo shapes the current single-checkout model can't handle) outrank the original ordering below. Current priority, highest first: **M10 (adopter runbook) → M11 (multi-repo, phase A) → M12 (multi-repo, phase B) → M13 (distributed tracing) → M14–M16 (the original eval-integrity/provider-parity/sandbox sequence, unchanged in content, renumbered)**.
+
+## M10 — Adopter runbook (ASAP — top priority)
+
+**Goal:** a single ordered document a new adopter follows start to finish, not reference material they have to assemble themselves.
+
+Today's docs are real but scattered: README's "Deploy in-cluster" (chart install, manual Job trigger, operator), `charts/kubemend/README.md` (GitOps checkout wiring, LLM credentials, operator webhook), and `kubemend.yaml`'s own comments (observability provider choice) each answer one piece, with no single path connecting them. The lab's `task demo` is the only true guided walkthrough, and it's lab-only.
+
+Scope: one new doc (`docs/getting-started.md`, linked prominently from README) walking the actual decision sequence a real adopter hits, each step pointing at the existing authoritative doc rather than duplicating it:
+1. **Which observability backend do you have** — `prometheus_loki` / `datadog` / `grafana_cloud`, credentials needed, pointer to README's "Observability providers" table.
+2. **Which trigger do you want** — manual Job (`helm template ... | kubectl create`) vs alert-triggered operator (`operator.enabled=true`) — decision criteria (do you already have Alertmanager routing? do you want a human clicking "run" per incident, at least at first?), pointer to `charts/kubemend/README.md`.
+3. **What shape is your GitOps repo** — single repo today (until M11/M12 land); the `job.extraInitContainers` clone pattern; where `writable_globs` needs to point.
+4. **Install and do a safe first run** — the existing `--read-only` CLI flag (`kubemend run --read-only`, registers no write path — the model can investigate and hand off, but nothing can open a PR) as the recommended first real-incident trial before turning on the write path. This flag exists today but is undocumented outside `cli.py`'s own docstring — surface it here as the trust-building step it actually is.
+5. **Verify it worked** — what a successful run looks like (draft PR opened, trace written), where to find the trace, what `validate_change`'s check table means.
+
+Accept: a person who has never read the codebase can follow the doc alone, end to end, against their own cluster, and reach either a draft PR or a `--read-only` handoff. No new code — this is a documentation milestone; if writing it surfaces a genuine UX gap (e.g., a missing flag, a config field with no good default), record that as a separate follow-up rather than scope-creeping the doc into a code change.
+
+## M11 — Multi-repo GitOps, phase A: per-app chart repos + one central values repo (multi-session; design doc first)
+
+**Goal:** support the GitOps shape where each app's Helm chart lives in its own repo, but all apps' values live together in one central repo — a common real-world split this project has never had to handle.
+
+Today `GitOpsConfig` assumes exactly one checked-out repo (`repo_path`, one `writable_globs`, one `base_branch`), and the chart's own init-container pattern clones exactly one repo into `/workspace`. `propose_git_change` is the single write path into that one checkout (CLAUDE.md hard rule 3) — multi-repo support must preserve that rule's *spirit* (one tool, one kind of side effect, glob-constrained) while extending its *mechanics* (which repo, selected how).
+
+This needs a design session before code, same discipline as M12/M16's sandbox work — the open questions are genuinely unresolved:
+- **Read side**: `read_gitops_file`/`list_gitops_files` need to read chart templates/`Chart.yaml` from the app's own chart repo (to know which values a chart consumes — the existing rationale for why reads are wider than `writable_globs`) while `propose_git_change` writes only into the central values repo. Two checkouts, one read-mostly and one write-target, is a different shape from today's single checkout doing both.
+- **Routing**: given a `Task`/`Scope` (namespace, app), how does the harness know which chart repo corresponds to that app? A config mapping (`app -> chart repo URL`) is the obvious answer — needs a sane story for a fleet of many apps (one entry per app is fine at small scale; large fleets may want a convention/lookup instead of an exhaustive list).
+- **Validator**: `validate_change`'s helm-render step currently renders one checkout against itself; it needs to render the central repo's proposed values against the *separate* chart repo's templates — check whether `helm template <chart-path> --values <central-repo-values>` cleanly supports cross-checkout paths, or whether the validator needs to compose a temporary combined tree.
+- **Chart deployment**: extend the init-container pattern to multiple clones (one per chart repo actually touched by a run, plus the one central values repo), or clone the union of all configured chart repos up front — trade off Job startup cost against complexity.
+
+Design doc should also state explicitly: this does *not* add a new write-capable tool. `propose_git_change` stays the only one; it gains a routing step, not a sibling.
+
+Accept: design doc reviewed and approved before implementation starts; once implemented, a lab scenario (or a new one) proves an incident in an app whose chart lives in repo A gets a correct values-only PR opened against repo B.
+
+## M12 — Multi-repo GitOps, phase B: multiple values repos (multi-session; builds on M11)
+
+**Goal:** support multiple *values* repos (e.g. per-team or per-environment), not just multiple chart repos.
+
+Scope: extends M11's routing concept — instead of routing only by "which chart repo does this app's chart live in," also route by "which values repo does this app's values live in." Whether this is a second independent routing table or a combined `(app) -> (chart repo, values repo)` mapping is a design question for this milestone, informed by whatever M11 actually built rather than pre-decided now. Sequenced after M11 deliberately: M11 already has to solve "more than one repo in play at once," and M12 is that same mechanism applied to the write side instead of only the read side — attempting both at once risks a design that's shaped by neither case cleanly.
+
+Accept: same shape as M11 — design doc first, then a lab-provable case where the correct values repo (out of more than one configured) receives the PR.
+
+## M13 — Distributed tracing as a third observability pillar (1–2 sessions)
+
+**Goal:** close the metrics/logs/traces gap — today only two of the three pillars exist.
+
+Scope: a `query_traces` tool alongside `query_metrics`/`search_logs`, following the same provider-dispatch pattern (`ObservabilityProvider`-style protocol, one implementation per backend selected via `ObservabilityConfig.provider`). Needs, per provider: Datadog APM (`/api/v2/spans/events/search` or the equivalent trace-search endpoint), Grafana Cloud (Tempo, TraceQL, likely reusing the same Basic Auth pattern `PrometheusProvider`/`LokiProvider` just gained if Tempo's HTTP API is close enough — verify, don't assume), and `prometheus_loki` — check whether the lab should grow a Tempo instance or whether tracing is scoped to the two hosted providers only, since self-hosted tracing is a bigger lab-infra lift than metrics/logs were. Schema design should follow the tool-contracts.md discipline used for the other two pillars from day one, not bolted on after.
+
+Accept: `query_traces` tool contract documented in `docs/knowledge/tool-contracts.md` alongside the existing two; at least one provider has a real, live-validated implementation (matching the M9/M9b bar — contract tests plus one manual run against a real account); the scenario/eval framework decides deliberately whether trace-based scenarios are in scope for this milestone or a follow-up (a trace-diagnosable incident is a different failure shape than the current crash-loop/OOM/bad-config scenario set).
+
+---
+
+## M14 — Eval integrity + cheap-tier baseline (1 session)
+
+**Goal:** sweep numbers can be trusted again, and the M7 surface gets its first committed baseline.
+
+Scope: (1) **Infra-vs-model failure classification** — the validator's diff stage currently reports Argo CD auth/transport failures (`Unauthenticated`, connection refused) identically to a real diff mismatch, so a run where the model proposed the correct fix gets recorded as a model failure. Classify these as `infra_error` in the check detail; the eval runner excludes such iterations from the pass rate and reports them separately (flag, never retry — CLAUDE.md's no-retries-for-flakes rule applies). (2) **`lab:argocd-token` staleness** — it only regenerates when the file is absent, so a recreated cluster silently invalidates it; regenerate whenever the cluster identity changes (or unconditionally during `lab:up`). (3) **Pricing verification** — `config/pricing.yaml`'s `gpt-4.1-mini` entry (and any other model actually swept) checked against a real invoice; drop the "unverified" caveat where verified. (4) **Committed cheap-tier baseline** — full 9-scenario sweep, n=3–5, `KUBEMEND_MODEL__CHEAP__PROVIDER=openai KUBEMEND_MODEL__CHEAP__NAME=gpt-4.1-mini`, committed under `evals/reports/` (single-run evidence from this session: bad-image-tag 1/1, $0.03, 109s — a full sweep is a few dollars).
+
+Accept: a deliberately-broken validator dependency (e.g. stale token) produces an `infra_error`-classified iteration, not a failed one, in the sweep report; `task lab:up` on a recreated cluster yields a working token with no manual intervention; the committed gpt-4.1-mini baseline lands with verified pricing behind its cost column.
+
+## M15 — Observability-provider eval parity, grafana_cloud first (1–2 sessions)
+
+**Goal:** one non-default observability provider goes from "one manual run" to eval-backed.
+
+Scope: run the existing 9-scenario suite end-to-end through `provider: grafana_cloud`, using `task lab:grafana-agent` to push the lab's own data to a real account. `grafana_cloud` first because it's nearly free: real PromQL/LogQL, and the Alloy relabel rules already emit `namespace`/`pod`/`container` labels matching what `evals/lab.py:loki_log_contains_query` and the scenario probes expect. Work items: the eval runner builds its provider/probe wiring from `ObservabilityConfig` instead of assuming the lab's Loki (the `LogContainsQueryBuilder` injection seam in `LabHandle` exists for exactly this); symptom-probe timeouts get documented headroom for cloud ingestion latency (measure it, state it, do not paper over it with retries); scenario checkers audited for any remaining Loki-schema assumptions. Datadog parity is explicitly a stretch goal — it needs a Datadog-syntax query builder and different metric names in probes; attempt only after grafana_cloud passes, and time-box it.
+
+Accept: a committed small-n sweep on `grafana_cloud` with pass rates comparable to the `prometheus_loki` baseline (differences explained, not hidden); the probe/checker layer provider-neutral by injection, not by per-provider forks of the runner; the Alloy pipeline hardened through repeated real use (closing the "validated once against one account" caveat in `docs/knowledge/lab-and-evals.md`).
+
+## M16 — Sandbox execution substrate (multi-session; design doc first)
+
+Per-run isolated tool execution replacing direct executor calls (the Option A platform work: agent-sandbox + a Kyverno pack, Go controllers) — then chart-editing behind a new risk gate. Still the right next *big* bet: chart-editing is gated on it, and M8b's operator raised the autonomy level enough that execution isolation now buys real risk reduction, not just hygiene. But the first session's deliverable is a **design doc + threat-model delta**, not code, answering: (a) what exactly is isolated, and where the trust boundary sits between sandbox and gate; (b) the constraint that the sandbox must sit behind the existing `registry.execute()` seam — if the design requires restructuring `core/loop.py`, that is the CLAUDE.md rule-7 design-discussion trigger firing, and the design is wrong; (c) an honest evaluation of whether chart-editing strictly requires full M16, or whether a narrower risk gate (widened `writable_globs` + a mandatory-human-review path + a stricter Kyverno pack for chart-touching PRs, all atop the existing render/policy/diff gate) could ship it a milestone earlier, with the sandbox following as defense-in-depth. KubeCon-CFP-scale work; each phase its own blog post.
+
+## Hardening candidates (no milestone; pick up opportunistically)
+
+- **Operator cooldown is in-memory** (M8b): a pod restart forgets all cooldowns, so an alert storm plus a crashlooping operator can spawn duplicate Jobs for the same incident. Check whether Job naming is deterministic per `(namespace, app, window)`; if not, deterministic naming is a cheap idempotency fix with outsized safety value — the operator is the one component acting without a human.
+- Persistent memory across runs stays deliberately deferred: no trace or user evidence yet that it blocks anyone, and it would grow `core/`. The burden of proof is on it. (Multi-GitOps-repo support, the other item previously deferred here, is promoted above to M11/M12 as of the 2026-08-23 reprioritization.)
 
 ## Cost guardrails for the whole plan
 
