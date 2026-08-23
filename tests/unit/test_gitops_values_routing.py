@@ -136,6 +136,33 @@ def test_the_returned_globs_are_a_copy_the_caller_cannot_mutate_config_through(
     assert globs == ["apps/**/values*.yaml"], "the path policy must not be aliased into config"
 
 
+def test_the_app_dir_template_is_carried_through_from_the_repo_spec(tmp_path: Path) -> None:
+    _checkout(tmp_path, "payments", "https://git.corp/payments/values.git")
+    cfg = _cfg(
+        tmp_path,
+        repos={
+            "payments": ValuesRepoSpec(
+                url="https://git.corp/payments/values.git",
+                app_dir_template="environments/prod/{app}",
+            )
+        },
+        apps={"checkout-api": "payments"},
+    )
+
+    route = resolve_values_route("checkout-api", cfg, default_writable_globs=DEFAULT_GLOBS)
+
+    assert route.app_dir_template == "environments/prod/{app}"
+
+
+def test_the_app_dir_template_defaults_to_the_pre_m12_layout(tmp_path: Path) -> None:
+    _checkout(tmp_path, "platform", "https://git.corp/platform/values.git")
+    cfg = _cfg(tmp_path, apps={"shop-api": "platform"})
+
+    route = resolve_values_route("shop-api", cfg, default_writable_globs=DEFAULT_GLOBS)
+
+    assert route.app_dir_template == "apps/{app}"
+
+
 # -- fail-fast wiring-time checks -----------------------------------------
 
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -141,6 +141,20 @@ class ValuesRepoSpec(BaseModel):
     # Per-repo: two teams' repos may genuinely differ in layout. None falls
     # back to GitOpsConfig.writable_globs, so the common case stays one setting.
     writable_globs: list[str] | None = None
+    # Where an app's directory sits in this repo. The default is the layout
+    # kubemend hardcoded before M12; a repo laid out per environment instead
+    # sets e.g. "environments/prod/{app}".
+    app_dir_template: str = "apps/{app}"
+
+    @field_validator("app_dir_template")
+    @classmethod
+    def _template_must_vary_by_app(cls, value: str) -> str:
+        # Without the placeholder every app resolves to one directory, and the
+        # validator would render whichever app it saw against another app's
+        # values — wrong, and silently so.
+        if "{app}" not in value:
+            raise ValueError(f"app_dir_template must contain '{{app}}'; got {value!r}")
+        return value
     # Forge coordinates for the PR call, only used when backend == "gitea".
     # Explicit rather than parsed off `url` (M12 §9 q1): an unparsed URL fails
     # loudly at wiring time, a mis-parsed one opens a PR against a real but

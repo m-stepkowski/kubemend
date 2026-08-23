@@ -229,6 +229,9 @@ def build_write_path(
         kube=build_kube_client(cfg.kubernetes),
         chart_dirs=({scope.app: chart_route.chart_dir} if chart_route is not None else None),
         run_id=run_id,
+        # Only a routed repo can describe a non-default layout; without one the
+        # Validator keeps its own default, which is the pre-M12 hardcode.
+        **({"app_dir_template": values_route.app_dir_template} if values_route else {}),
     )
     return proposer, PipelineGate(proposer=proposer, validator=validator)
 

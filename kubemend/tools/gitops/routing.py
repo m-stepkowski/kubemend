@@ -154,6 +154,9 @@ class ValuesRoute:
     base_branch: str
     url: str
     writable_globs: list[str]
+    # Where an app's directory sits in this repo — the validator formats it
+    # per app to find that app's values.yaml.
+    app_dir_template: str
     # None when backend == "local", which never opens a real PR.
     gitea_owner: str | None
     gitea_repo: str | None
@@ -197,6 +200,7 @@ def resolve_values_route(
         writable_globs=list(
             spec.writable_globs if spec.writable_globs is not None else default_writable_globs
         ),
+        app_dir_template=spec.app_dir_template,
         gitea_owner=spec.gitea_owner,
         gitea_repo=spec.gitea_repo,
     )

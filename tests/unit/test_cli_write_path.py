@@ -108,6 +108,7 @@ def _values_route(tmp_path: Path, **kwargs: object) -> ValuesRoute:
         "base_branch": "release",
         "url": "https://git.corp/platform/values.git",
         "writable_globs": ["environments/**/values*.yaml"],
+        "app_dir_template": "apps/{app}",
         "gitea_owner": "platform",
         "gitea_repo": "values",
     }
