@@ -14,10 +14,13 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
+from kubemend.config import ValuesRepoSpec
 from kubemend.core.model import Scope
 from kubemend.tools.gitops.validator import (
     CommandResult,
@@ -671,6 +674,43 @@ def test_single_repo_mode_never_passes_a_values_flag(tmp_path: Path) -> None:
     helm_call = next(c for c in runner.calls if c[0] == "/pinned/helm")
     assert "--values" not in helm_call
     assert str(tmp_path / "apps" / "shop-api") in helm_call
+
+
+# -- per-repo layout (M12) -------------------------------------------------
+
+
+def test_a_custom_app_dir_template_moves_where_split_mode_reads_values(tmp_path: Path) -> None:
+    """M12's values repos are per-team, and two teams' repos genuinely differ
+    in layout — the pre-M12 `apps/<app>/` was hardcoded in two places."""
+    chart_dir = tmp_path / "chart-checkout" / "shop-api"
+    runner = _rendering_runner(argocd=CommandResult(1, stdout=ARGOCD_DIFF))
+    validator = _split_validator(runner, tmp_path, chart_dirs={"shop-api": chart_dir})
+    validator = replace(validator, app_dir_template="environments/prod/{app}")
+
+    validator.validate(["shop-api"])
+
+    helm_call = next(c for c in runner.calls if c[0] == "/pinned/helm")
+    values_path = helm_call[helm_call.index("--values") + 1]
+    assert values_path == str(tmp_path / "environments" / "prod" / "shop-api" / "values.yaml")
+
+
+def test_a_custom_app_dir_template_also_moves_the_single_repo_chart_dir(tmp_path: Path) -> None:
+    """In single-repo mode the same directory holds the chart *and* its
+    values, so one template governs both."""
+    runner = _rendering_runner(argocd=CommandResult(1, stdout=ARGOCD_DIFF))
+    validator = replace(_argo_validator(runner, tmp_path), app_dir_template="charts/{app}")
+
+    validator.validate(["shop-api"])
+
+    helm_call = next(c for c in runner.calls if c[0] == "/pinned/helm")
+    assert str(tmp_path / "charts" / "shop-api") in helm_call
+
+
+def test_a_template_without_the_app_placeholder_is_rejected_at_config_time() -> None:
+    """Every app would resolve to one directory, and the validator would
+    render one app against another's values — wrong, and silently so."""
+    with pytest.raises(ValidationError, match=r"must contain '\{app\}'"):
+        ValuesRepoSpec(url="https://git.corp/platform/values.git", app_dir_template="apps/shared")
 
 
 def test_split_mode_render_fails_clearly_for_an_app_outside_scope(tmp_path: Path) -> None:

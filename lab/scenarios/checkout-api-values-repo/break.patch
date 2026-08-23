@@ -1,0 +1,13 @@
+diff --git a/apps/checkout-api/values.yaml b/apps/checkout-api/values.yaml
+index 0000000..0000000 100644
+--- a/apps/checkout-api/values.yaml
++++ b/apps/checkout-api/values.yaml
+@@ -10,7 +10,7 @@
+
+ image:
+   repository: nginxinc/nginx-unprivileged
+-  tag: "1.27-alpine"
++  tag: "1.27-alpine-nonexistent"
+   pullPolicy: IfNotPresent
+
+ service:

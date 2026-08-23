@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -128,6 +128,61 @@ class ChartReposConfig(BaseModel):
     apps: dict[str, ChartRepoSpec] = Field(default_factory=dict)
 
 
+class ValuesRepoSpec(BaseModel):
+    """One *named* values repo, in multi-values mode (M12 design doc §3).
+
+    Named, not app-keyed, because values repos are N:1 with apps (a per-team or
+    per-environment repo holds many apps' values) while chart repos are 1:1 —
+    see the M12 doc's §1 table for why that asymmetry drives the whole shape.
+    """
+
+    url: str
+    base_branch: str = "main"
+    # Per-repo: two teams' repos may genuinely differ in layout. None falls
+    # back to GitOpsConfig.writable_globs, so the common case stays one setting.
+    writable_globs: list[str] | None = None
+    # Where an app's directory sits in this repo. The default is the layout
+    # kubemend hardcoded before M12; a repo laid out per environment instead
+    # sets e.g. "environments/prod/{app}".
+    app_dir_template: str = "apps/{app}"
+
+    @field_validator("app_dir_template")
+    @classmethod
+    def _template_must_vary_by_app(cls, value: str) -> str:
+        # Without the placeholder every app resolves to one directory, and the
+        # validator would render whichever app it saw against another app's
+        # values — wrong, and silently so.
+        if "{app}" not in value:
+            raise ValueError(f"app_dir_template must contain '{{app}}'; got {value!r}")
+        return value
+
+    # Forge coordinates for the PR call, only used when backend == "gitea".
+    # Explicit rather than parsed off `url` (M12 §9 q1): an unparsed URL fails
+    # loudly at wiring time, a mis-parsed one opens a PR against a real but
+    # wrong repo.
+    gitea_owner: str | None = None
+    gitea_repo: str | None = None
+
+
+class ValuesReposConfig(BaseModel):
+    """Multi-values-repo routing (M12 design doc §3-4). Absent on
+    `GitOpsConfig` (`values_repos: None`) means the single values repo
+    described by `repo_path`/`writable_globs`/`base_branch`/`gitea_*`."""
+
+    # Init containers clone each *named* repo to checkout_root/<name> — keyed
+    # by repo name, not app, so a repo shared by many apps is cloned once.
+    # In-cluster this is /workspace-values.
+    checkout_root: Path = Path(".lab/values-workspaces")
+    repos: dict[str, ValuesRepoSpec] = Field(default_factory=dict)
+    # app -> repo name. The N:1 mapping; the value must be a key of `repos`.
+    apps: dict[str, str] = Field(default_factory=dict)
+    # Catch-all for apps with no explicit entry — the realistic "most apps live
+    # in the main repo, a few don't" shape. No `url_template` sibling here
+    # (unlike chart_repos): with an N:1 mapping the grouping *is* the
+    # information, so there is nothing to template.
+    default: str | None = None
+
+
 class GitOpsConfig(BaseModel):
     backend: Literal["local", "gitea"] = "local"
     # Inside .lab rather than a sibling directory: the workspace is generated,
@@ -148,6 +203,13 @@ class GitOpsConfig(BaseModel):
     # mode that repo just no longer also holds the charts. None => today's
     # single-repo behavior, byte-for-byte; this is additive, not a migration.
     chart_repos: ChartReposConfig | None = None
+
+    # Only used in multi-values mode (M12): the repo_path/writable_globs/
+    # base_branch/gitea_* fields above describe the single values repo, and
+    # this section overrides *which* repo those describe, per app. None =>
+    # one values repo, exactly as above. Orthogonal to chart_repos: either,
+    # both, or neither can be set.
+    values_repos: ValuesReposConfig | None = None
 
 
 class ArgoCdConfig(BaseModel):

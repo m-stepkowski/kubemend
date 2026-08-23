@@ -1,0 +1,34 @@
+# M12 multi-values-repo fixture: this Application's source is the *second*
+# gitea repo (`gitops-payments`), not the one every other demo app reads from.
+# That is the whole point — the acceptance scenario proves a run scoped to
+# checkout-api opens its PR against this repo and leaves `gitops` untouched.
+#
+# Single-source, unlike shop-api-split's multi-source Application: M12 routes
+# the values repo, which is orthogonal to M11's split of chart from values. A
+# repo reached this way holds both, exactly like the original `gitops` repo.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: checkout-api
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: http://gitea-http.gitea.svc.cluster.local:3000/kubemend/gitops-payments.git
+    targetRevision: main
+    path: apps/checkout-api
+  destination:
+    server: https://kubernetes.default.svc
+    # Its own namespace, for the reason M11 established with shop-split: an
+    # unscoped ResourceQuota is cumulative per namespace, so sharing `shop`
+    # would silently couple this fixture to the quota-conflict scenario's
+    # mechanics.
+    namespace: shop-payments
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

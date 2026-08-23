@@ -33,6 +33,13 @@ from kubemend.tools.base import ToolError
 # (kind, namespace, name)
 Resource = tuple[str, str, str]
 
+# The layout kubemend hardcoded before M12, in the two places this now feeds
+# (`_app_dir`, and split mode's explicit `--values` flag). Lives here rather
+# than in config.py because this module owns the behavior; `ValuesRepoSpec`
+# carries the same literal as its schema default, which is the layer that
+# documents it to a user writing kubemend.yaml.
+DEFAULT_APP_DIR_TEMPLATE = "apps/{app}"
+
 
 @dataclass(frozen=True)
 class CommandResult:
@@ -177,6 +184,14 @@ class Validator:
     # way `--local` does, so unlike everything else here it needs a name, not
     # just a path.
     run_id: str = ""
+    # Where an app's directory sits inside this repo. The default is the
+    # layout every kubemend repo used before M12, when it was hardcoded in the
+    # two places below. Configurable because M12's values repos are per-team
+    # and two teams' repos genuinely differ in layout (M12 design doc §9 q2).
+    # In single-repo mode this directory holds both the chart and its values;
+    # in split mode the chart lives elsewhere and only values.yaml is read
+    # from here — one concept either way, "this app's directory in this repo".
+    app_dir_template: str = DEFAULT_APP_DIR_TEMPLATE
 
     @property
     def _uses_argocd(self) -> bool:
@@ -186,9 +201,12 @@ class Validator:
     def _split_mode(self) -> bool:
         return self.chart_dirs is not None
 
+    def _app_dir(self, app: str) -> Path:
+        return self.repo_path / self.app_dir_template.format(app=app)
+
     def _chart_dir(self, app: str) -> Path:
         if self.chart_dirs is None:
-            return self.repo_path / "apps" / app
+            return self._app_dir(app)
         return self.chart_dirs[app]
 
     def validate(self, apps: Sequence[str]) -> Verdict:
@@ -261,7 +279,7 @@ class Validator:
                 # gap in both modes (ARCHITECTURE.md §5 says "base+env
                 # values"; the code has only ever rendered base), not
                 # something split mode introduces or fixes.
-                values_flags = ["--values", str(self.repo_path / "apps" / app / "values.yaml")]
+                values_flags = ["--values", str(self._app_dir(app) / "values.yaml")]
             result = self.runner.run(
                 [
                     str(self.helm_bin),

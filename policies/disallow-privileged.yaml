@@ -5,8 +5,11 @@
 # PR is allowed to pass the gate. Admission parity is the point — a change the
 # agent proposes must fail the same way it would fail in a real cluster.
 #
-# Scoped to `shop` and `shop-split` (M11's split-mode demo app, isolated in
-# its own namespace so it can't interact with shop-api/shop-worker's quota).
+# Scoped to `shop`, `shop-split` (M11's split-mode demo app) and
+# `shop-payments` (M12's second-values-repo demo app). Each demo app gets its
+# own namespace for the same reason: the shop-api chart's ResourceQuota is
+# unscoped and therefore cumulative per namespace, so co-locating them would
+# silently couple every fixture to the quota-conflict scenario's mechanics.
 # The infrastructure namespaces run upstream charts we do not control, and
 # enforcing our house rules on them would only teach us that Prometheus
 # mounts a hostPath.
@@ -26,7 +29,7 @@ spec:
         any:
           - resources:
               kinds: [Pod]
-              namespaces: [shop, shop-split]
+              namespaces: [shop, shop-split, shop-payments]
       validate:
         message: >-
           Privileged mode is not allowed. Set

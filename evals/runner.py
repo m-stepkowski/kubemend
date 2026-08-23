@@ -252,23 +252,32 @@ def render_report_json(report: SweepReport) -> str:
 # -- CLI ----------------------------------------------------------------
 
 SPLIT_MODE_TAG = "split-mode"
+MULTI_VALUES_TAG = "multi-values"
 
 
 def _scenarios_for_all(cfg: RunConfig) -> list[str]:
-    """The implicit `-s all` set — everything, except a scenario tagged
-    "split-mode" (M11) when `cfg` isn't split mode.
+    """The implicit `-s all` set — everything, minus scenarios whose GitOps
+    mode `cfg` isn't in.
 
-    Against the default single-repo config such a scenario would always fail
-    (`gitops.chart_repos` unset, no chart route) — not a model or harness
-    problem, a mode mismatch — and silently corrupt the "all scenarios" pass
-    rate for everyone who doesn't pass `--config kubemend.split-mode.yaml`.
-    Still runnable by explicit name (with the matching config) for exactly
-    that reason — only the implicit "all" selection excludes it.
+    A "split-mode" (M11) scenario against a config with no `chart_repos`, or a
+    "multi-values" (M12) scenario against one with no `values_repos`, would
+    always fail — not a model or harness problem, a mode mismatch — and
+    silently corrupt the "all scenarios" pass rate for everyone running the
+    default config. Each stays runnable by explicit name with its matching
+    config, which is exactly why only the implicit "all" selection filters.
     """
-    available = list_scenarios()
-    if cfg.gitops.chart_repos is not None:
-        return available
-    return [n for n in available if SPLIT_MODE_TAG not in load_scenario(n)[0].tags]
+    required_mode = {
+        SPLIT_MODE_TAG: cfg.gitops.chart_repos is not None,
+        MULTI_VALUES_TAG: cfg.gitops.values_repos is not None,
+    }
+    return [
+        name
+        for name in list_scenarios()
+        if all(
+            configured or tag not in load_scenario(name)[0].tags
+            for tag, configured in required_mode.items()
+        )
+    ]
 
 
 def _build_lab(cfg: RunConfig) -> LabHandle:

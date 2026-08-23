@@ -1,0 +1,8 @@
+apiVersion: v2
+name: checkout-api
+description: >-
+  Second demo service for the kubemend lab, living in a *different* values repo
+  from shop-api — the M12 multi-values-repo acceptance fixture.
+type: application
+version: 0.1.0
+appVersion: "1.27"

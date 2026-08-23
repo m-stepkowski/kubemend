@@ -284,6 +284,43 @@ responsible for that concern — no changes under `kubemend/core/`:
 Full design rationale, rejected alternatives, and the acceptance scenario:
 `docs/design/m11-multi-repo-gitops.md`.
 
+### 4.4 Multi-values mode (M12): several values repos
+
+`gitops.values_repos: ValuesReposConfig | None` (default `None`) routes *which
+values repo* an app's values live in, where §4.3 routes which chart repo its
+chart comes from. The two are orthogonal — set either, both, or neither — and
+`None` is byte-for-byte today's single-values-repo behavior.
+
+`resolve_values_route(app, cfg)` in the same `routing.py` resolves an explicit
+`values_repos.apps[app]` entry, else `values_repos.default`, to a **named**
+repo; the checkout is `checkout_root / <repo name>`. Named rather than
+app-keyed because the cardinalities differ, and that difference is the whole
+reason this is a sibling config section rather than one merged
+`(app) -> (chart repo, values repo)` table:
+
+| | chart repos (§4.3) | values repos (§4.4) |
+|---|---|---|
+| Cardinality vs. apps | 1:1 | **N:1** — many apps share one per-team/per-env repo |
+| Access | read-only | **the write target** |
+| Checkout keyed by | app | **repo name** — one clone serves every app mapped to it |
+
+Because a values repo is the write target, `ValuesRoute` carries more than a
+chart route does: the base branch, the path policy (`writable_globs`, per-repo
+with the global as fallback), the per-app directory layout
+(`app_dir_template`, default `apps/{app}`), and the forge coordinates for the
+PR call. Those coordinates are **required** per repo under `backend: gitea` —
+falling back to the top-level `gitea_owner`/`gitea_repo` would open the PR
+against a real but wrong repo, so `build_write_path` fails at wiring time
+instead.
+
+`cli.py`'s `build_write_path` is the single place the substitution happens,
+which is why `Proposer`, both git backends and `reader.py` needed no changes:
+each was already parameterized by path and coordinates. A run still writes to
+exactly one repo, holds one branch, and opens one PR — invariant I5 unchanged.
+
+Design doc, including the acceptance scenario and the `list_gitops_files`
+no-match-recovery change it surfaced: `docs/design/m12-multi-values-repos.md`.
+
 ---
 
 ## 5. Verification gate

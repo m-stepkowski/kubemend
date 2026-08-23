@@ -110,6 +110,48 @@ def test_listing_narrows_to_a_chart(repo: Path) -> None:
     assert "apps/shop-api/templates/service.yaml" in result["paths"]
 
 
+# -- no-match recovery (M12 §10c) -----------------------------------------
+
+
+def test_an_unmatched_glob_returns_what_the_repo_actually_holds(repo: Path) -> None:
+    """An empty list says the glob matched nothing, not that the *prefix* was
+    wrong — so the next guess stays anchored to the same bad assumption. Two
+    of three M12 acceptance runs died guessing apps/<namespace>/<app>/... and
+    re-listing under that same wrong prefix until the loop detector fired.
+    """
+    result = GitOpsReader(repo).list("apps/shop-payments/checkout-api/**")
+
+    assert result["paths"] == []
+    assert "apps/shop-api/values.yaml" in result["repository_paths"]
+    assert "no_match" in result
+
+
+def test_a_matched_glob_carries_no_recovery_listing(repo: Path) -> None:
+    """The listing is a recovery aid, not a routine payload — sending it on
+    every successful call would swell context for no reason."""
+    result = GitOpsReader(repo).list("apps/shop-api/**/*")
+
+    assert "repository_paths" not in result
+    assert "no_match" not in result
+
+
+def test_the_recovery_listing_is_capped(repo: Path) -> None:
+    from git import Repo
+
+    from kubemend.tools.gitops.reader import MAX_LISTED_PATHS
+
+    git_repo = Repo(repo)
+    for i in range(MAX_LISTED_PATHS + 25):
+        (repo / f"apps/shop-api/f{i:04d}.yaml").write_text("a: 1\n")
+    git_repo.index.add([f"apps/shop-api/f{i:04d}.yaml" for i in range(MAX_LISTED_PATHS + 25)])
+    git_repo.index.commit("many files")
+
+    result = GitOpsReader(repo).list("nowhere/**")
+
+    assert len(result["repository_paths"]) == MAX_LISTED_PATHS
+    assert result["repository_paths_truncated"] is True
+
+
 def test_oversized_file_is_truncated_rather_than_flooding_context(repo: Path) -> None:
     from git import Repo
 
@@ -189,6 +231,31 @@ def test_chart_repo_listing_strips_the_prefix_back_off(tmp_path: Path) -> None:
     result = list_gitops_files_spec(readers).executor({"pattern": "**/*", "repo": "chart"})
 
     assert result["paths"] == ["templates/deployment.yaml"]
+
+
+def test_chart_repo_no_match_listing_is_translated_to_the_models_path_space(
+    tmp_path: Path,
+) -> None:
+    """The recovery listing is model-facing, so it gets the same prefix
+    treatment reads do: stripped, and narrowed to the chart route — sibling
+    paths outside chart_path are ones the model has no way to read back."""
+    from git import Repo
+
+    chart_checkout = tmp_path / "chart-checkout"
+    (chart_checkout / "chart" / "templates").mkdir(parents=True)
+    (chart_checkout / "chart" / "templates" / "deployment.yaml").write_text("kind: Deployment\n")
+    (chart_checkout / "unrelated.md").write_text("not part of the chart\n")
+    git_repo = Repo.init(chart_checkout, initial_branch="main")
+    git_repo.index.add(["chart/templates/deployment.yaml", "unrelated.md"])
+    git_repo.index.commit("seed")
+
+    readers = {"chart": ReaderRoute(GitOpsReader(chart_checkout), prefix="chart")}
+
+    result = list_gitops_files_spec(readers).executor({"pattern": "nowhere/**", "repo": "chart"})
+
+    assert result["paths"] == []
+    assert result["repository_paths"] == ["templates/deployment.yaml"]
+    assert "unrelated.md" not in result["repository_paths"]
 
 
 def test_chart_repo_in_single_repo_mode_returns_a_structured_client_error(repo: Path) -> None:

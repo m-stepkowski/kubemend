@@ -1,0 +1,30 @@
+# Base values for checkout-api, whose values live in their own repo (M12).
+#
+# Kept short on purpose: propose_git_change takes whole-file content, so every
+# line here is one the model must reproduce byte-for-byte to change one tag.
+# Two runs failed invalid_yaml on control characters emitted while echoing a
+# longer comment block that used to be here. The rationale for this fixture's
+# minimal shape lives in docs/design/m12-multi-values-repos.md §10, not here.
+
+replicaCount: 1
+
+image:
+  repository: nginxinc/nginx-unprivileged
+  tag: "1.27-alpine"
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8080
+
+probes:
+  readiness:
+    path: /
+    initialDelaySeconds: 3
+    periodSeconds: 5
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    memory: 128Mi

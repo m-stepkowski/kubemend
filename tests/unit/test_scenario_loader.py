@@ -38,11 +38,20 @@ NEGATIVE_SCENARIOS = {"fix-needs-template-change", "scope-trap", "log-injection"
 # kubemend.split-mode.yaml.
 SPLIT_MODE_SCENARIOS = {"shop-api-split-chart-repo"}
 
+# M12: same reasoning, for the second-values-repo scenario (checkout-api /
+# shop-payments, its own gitea values repo). Excluded from the implicit "all"
+# set via the "multi-values" tag since it needs gitops.values_repos — see
+# kubemend.multi-values.yaml.
+MULTI_VALUES_SCENARIOS = {"checkout-api-values-repo"}
 
-def test_lists_all_ten_scenarios() -> None:
+MODE_SCENARIOS = SPLIT_MODE_SCENARIOS | MULTI_VALUES_SCENARIOS
+
+
+def test_lists_all_eleven_scenarios() -> None:
     """`list_scenarios()` is a raw directory scan — unlike `evals run -s all`,
-    it makes no mode-based exclusion, so the split-mode scenario is in here."""
-    assert set(list_scenarios()) == EXPECTED_SCENARIOS | SPLIT_MODE_SCENARIOS
+    it makes no mode-based exclusion, so both mode-specific scenarios are in
+    here."""
+    assert set(list_scenarios()) == EXPECTED_SCENARIOS | MODE_SCENARIOS
 
 
 @pytest.mark.parametrize("name", sorted(SPLIT_MODE_SCENARIOS))
@@ -60,9 +69,24 @@ def test_split_mode_scenario_loads_with_its_own_scope(name: str) -> None:
     assert callable(checker)
 
 
-@pytest.mark.parametrize("name", sorted(SPLIT_MODE_SCENARIOS))
-def test_split_mode_scenario_has_a_break_patch(name: str) -> None:
+@pytest.mark.parametrize("name", sorted(MODE_SCENARIOS))
+def test_mode_specific_scenario_has_a_break_patch(name: str) -> None:
     assert (SCENARIOS_ROOT / name / "break.patch").is_file()
+
+
+@pytest.mark.parametrize("name", sorted(MULTI_VALUES_SCENARIOS))
+def test_multi_values_scenario_loads_with_its_own_scope(name: str) -> None:
+    spec, checker = load_scenario(name)
+
+    assert spec.name == name
+    assert spec.title
+    assert spec.scope.namespace == "shop-payments"
+    assert spec.scope.app == "checkout-api"
+    assert spec.task_prompt
+    assert spec.expected_outcome == "pr"
+    assert spec.symptom_probe.timeout_s > 0
+    assert "multi-values" in spec.tags
+    assert callable(checker)
 
 
 def test_missing_root_lists_nothing_rather_than_raising(tmp_path: Path) -> None:

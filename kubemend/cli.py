@@ -34,8 +34,15 @@ from kubemend.tools.gitops.reader import (
     list_gitops_files_spec,
     read_gitops_file_spec,
 )
-from kubemend.tools.gitops.routing import ChartRoute, ChartRouteError, resolve_chart_route
-from kubemend.tools.gitops.validator import Validator
+from kubemend.tools.gitops.routing import (
+    ChartRoute,
+    ChartRouteError,
+    ValuesRoute,
+    ValuesRouteError,
+    resolve_chart_route,
+    resolve_values_route,
+)
+from kubemend.tools.gitops.validator import DEFAULT_APP_DIR_TEMPLATE, Validator
 from kubemend.tools.kubernetes.factory import build_kube_client
 from kubemend.tools.kubernetes.reader import KubernetesReader, k8s_tool_spec
 from kubemend.tools.observability.factory import ObservabilityConfigError, build_observability_tools
@@ -115,12 +122,27 @@ def build_read_only_registry(cfg: RunConfig) -> ToolRegistry:
     )
 
 
+def values_repo_path_for(cfg: RunConfig, values_route: ValuesRoute | None) -> Path:
+    """Which checkout holds this run's values — the routed one (M12) or the
+    single `gitops.repo_path` when no route applies.
+
+    One helper rather than the expression inline, because three call sites
+    need the same answer and a run whose proposer, validator and reader
+    disagreed about which repo it is writing to would be a genuinely
+    confusing failure.
+    """
+    if values_route is not None:
+        return values_route.checkout_root
+    return Path(cfg.gitops.repo_path).expanduser().resolve()
+
+
 def build_write_path(
     cfg: RunConfig,
     scope: Scope,
     run_id: str,
     lab_bin: Path,
     chart_route: ChartRoute | None = None,
+    values_route: ValuesRoute | None = None,
 ) -> tuple[Proposer, PipelineGate]:
     """Assemble the proposer, validator and gate for a run that may write.
 
@@ -133,6 +155,12 @@ def build_write_path(
     caller resolves it once via `resolve_chart_route`, since it is also
     needed to build the chart `GitOpsReader` this function has no reason to
     know about.
+
+    `values_route` is likewise `None` unless `gitops.values_repos` is set
+    (M12). When set it replaces the four `gitops.*` fields that describe the
+    single values repo — path, writable globs, base branch, forge coordinates
+    — and this function is the *only* place that substitution happens, which
+    is what keeps `Proposer`/the backends/`reader.py` unchanged.
     """
     if chart_route is not None and cfg.gitops.backend != "gitea":
         # Split mode's diff reads a pushed ref (validator.py's `--revisions`,
@@ -145,30 +173,48 @@ def build_write_path(
             f"{cfg.gitops.backend!r} — split mode's diff needs a forge backend to "
             "push the run branch to; set gitops.backend: gitea"
         )
-    backend: GitBackend = LocalGitBackend(cfg.gitops.repo_path)
+    values_repo_path = values_repo_path_for(cfg, values_route)
+    base_branch = values_route.base_branch if values_route else cfg.gitops.base_branch
+    writable_globs = (
+        values_route.writable_globs if values_route else list(cfg.gitops.writable_globs)
+    )
+    backend: GitBackend = LocalGitBackend(values_repo_path)
     if cfg.gitops.backend == "gitea":
         token_file = Path(cfg.gitops.gitea_token_file).expanduser()
         if not token_file.exists():
             raise typer.BadParameter(
                 f"gitops.backend is 'gitea' but no token at {token_file} — run `task lab:workspace`"
             )
+        owner, repo = cfg.gitops.gitea_owner, cfg.gitops.gitea_repo
+        if values_route is not None:
+            if values_route.gitea_owner is None or values_route.gitea_repo is None:
+                # Falling back to the top-level gitea_owner/gitea_repo here
+                # would open the PR against whatever single repo those name —
+                # a real repo, the wrong one. That is the exact failure the
+                # per-repo coordinates exist to prevent, so it fails instead.
+                raise typer.BadParameter(
+                    f"values repo {values_route.name!r} has no gitea_owner/gitea_repo, and "
+                    "gitops.backend is 'gitea' — set both under "
+                    f"gitops.values_repos.repos.{values_route.name}"
+                )
+            owner, repo = values_route.gitea_owner, values_route.gitea_repo
         backend = GiteaBackend(
-            cfg.gitops.repo_path,
+            values_repo_path,
             api_url=cfg.gitops.gitea_api_url,
-            owner=cfg.gitops.gitea_owner,
-            repo=cfg.gitops.gitea_repo,
+            owner=owner,
+            repo=repo,
             token=token_file.read_text().strip(),
             push_on_write=chart_route is not None,
         )
     proposer = Proposer(
         backend=backend,
-        writable_globs=list(cfg.gitops.writable_globs),
-        base_branch=cfg.gitops.base_branch,
+        writable_globs=writable_globs,
+        base_branch=base_branch,
         run_id=run_id,
     )
     argocd_token_file = Path(cfg.argocd.token_file).expanduser()
     validator = Validator(
-        repo_path=Path(cfg.gitops.repo_path).expanduser().resolve(),
+        repo_path=values_repo_path,
         scope=scope,
         helm_bin=lab_bin / "helm",
         kyverno_bin=lab_bin / "kyverno",
@@ -183,6 +229,13 @@ def build_write_path(
         kube=build_kube_client(cfg.kubernetes),
         chart_dirs=({scope.app: chart_route.chart_dir} if chart_route is not None else None),
         run_id=run_id,
+        # Only a routed repo can describe a non-default layout. Passed
+        # explicitly rather than conditionally spliced in: a `**{...}` unpack
+        # defeats the type checker, which is what let an arg-type error sit
+        # here unnoticed behind an earlier lint failure.
+        app_dir_template=(
+            values_route.app_dir_template if values_route is not None else DEFAULT_APP_DIR_TEMPLATE
+        ),
     )
     return proposer, PipelineGate(proposer=proposer, validator=validator)
 
@@ -219,13 +272,27 @@ def execute_incident(
                 typer.echo(str(exc), err=True)
                 raise typer.Exit(code=1) from exc
 
-        proposer, gate = build_write_path(cfg, task.scope, run_id, lab_bin.resolve(), chart_route)
+        values_route: ValuesRoute | None = None
+        if cfg.gitops.values_repos is not None:
+            try:
+                values_route = resolve_values_route(
+                    task.scope.app,
+                    cfg.gitops.values_repos,
+                    default_writable_globs=list(cfg.gitops.writable_globs),
+                )
+            except ValuesRouteError as exc:
+                typer.echo(str(exc), err=True)
+                raise typer.Exit(code=1) from exc
+
+        proposer, gate = build_write_path(
+            cfg, task.scope, run_id, lab_bin.resolve(), chart_route, values_route
+        )
         # Reads are registered with the write path, not with the read-only
         # tools: without a proposer there is nothing to write and no reason to
         # put chart internals into context.
         reader = GitOpsReader(
-            Path(cfg.gitops.repo_path).expanduser().resolve(),
-            base_branch=cfg.gitops.base_branch,
+            values_repo_path_for(cfg, values_route),
+            base_branch=values_route.base_branch if values_route else cfg.gitops.base_branch,
         )
         readers: dict[str, ReaderRoute] = {"values": ReaderRoute(reader)}
         if chart_route is not None:
