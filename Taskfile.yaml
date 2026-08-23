@@ -443,13 +443,36 @@ tasks:
         fi
 
         # An API token, not the admin password, is what the agent's backend uses.
-        if [ ! -f {{.ROOT_DIR}}/.lab/gitea-token ]; then
+        #
+        # Regenerated when the stored token no longer *authenticates*, not
+        # merely when the file is absent: a `task lab:gitea` helm upgrade
+        # rotates gitea's admin session underneath an existing file, and the
+        # stale token then fails deep inside a run with an opaque "invalid
+        # username, password or token" — nowhere near its cause. Cost of the
+        # check is one API call; cost of not having it, during M11, was two
+        # full debugging cycles. This is credential validation, not a retry
+        # loop: nothing here masks nondeterminism.
+        # A *repository* endpoint, not /api/v1/user: this token is minted with
+        # scopes ["write:repository"], so /user answers 403 for a perfectly
+        # valid token and the check would regenerate on every single run.
+        # Probing the repo the agent actually writes to tests the credential
+        # and the permission that matters, and cleanly separates 200 from the
+        # 401 a genuinely stale token gets.
+        TOKEN_FILE={{.ROOT_DIR}}/.lab/gitea-token
+        if [ -s "$TOKEN_FILE" ] && curl -fsS -o /dev/null \
+             -H "Authorization: token $(cat "$TOKEN_FILE")" \
+             http://localhost:3000/api/v1/repos/kubemend/gitops 2>/dev/null; then
+          echo "gitea token still valid"
+        else
+          [ -s "$TOKEN_FILE" ] && echo "gitea token stale — regenerating"
+          # Unique name per generation: the superseded token still exists
+          # server-side, and gitea rejects a duplicate token name outright.
           curl -fsS -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-            -d '{"name":"kubemend-agent","scopes":["write:repository"]}' \
+            -d "{\"name\":\"kubemend-agent-$(date +%s)\",\"scopes\":[\"write:repository\"]}" \
             http://localhost:3000/api/v1/users/kubemend/tokens \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha1"])' \
-            > {{.ROOT_DIR}}/.lab/gitea-token
-          chmod 600 {{.ROOT_DIR}}/.lab/gitea-token
+            > "$TOKEN_FILE"
+          chmod 600 "$TOKEN_FILE"
         fi
 
         rm -rf "$WS"
@@ -499,10 +522,6 @@ tasks:
         # The gate needs Argo to compute the diff, because kubectl diff is a
         # dry-run apply and RBAC authorizes dry-run exactly like a real write —
         # the agent's read-only ServiceAccount is refused.
-        if [ -s {{.ROOT_DIR}}/.lab/argocd-token ]; then
-          echo "argocd token already present"; exit 0
-        fi
-
         if ! curl -fsS -o /dev/null http://localhost:8080/healthz 2>/dev/null; then
           {{.LAB_BIN}}/kubectl -n argocd port-forward svc/argocd-server 8080:80 >/dev/null 2>&1 &
           PF=$!
@@ -512,6 +531,24 @@ tasks:
             sleep 1
           done
         fi
+
+        # Liveness, not existence: a `task lab:argocd` helm upgrade rotates the
+        # server's signing key underneath an existing token file, and the stale
+        # JWT then fails inside the gate's diff stage as `Unauthenticated` —
+        # reported identically to a real diff mismatch, so a run where the model
+        # was correct gets recorded as a model failure. Same bug class as the
+        # gitea token in lab:workspace; fixed the same way.
+        # `app list`, not `account get-user-info`: the latter exits 0 and prints
+        # "Logged In: false" for a garbage token, so it validates nothing (found
+        # by feeding it one). `app list` genuinely round-trips the credential
+        # and exercises the same read the gate's diff stage needs.
+        TOKEN_FILE={{.ROOT_DIR}}/.lab/argocd-token
+        if [ -s "$TOKEN_FILE" ] && {{.LAB_BIN}}/argocd app list \
+             --server localhost:8080 --plaintext --grpc-web \
+             --auth-token "$(cat "$TOKEN_FILE")" >/dev/null 2>&1; then
+          echo "argocd token still valid"; exit 0
+        fi
+        [ -s "$TOKEN_FILE" ] && echo "argocd token stale — regenerating"
 
         PW=$({{.LAB_BIN}}/kubectl -n argocd get secret argocd-initial-admin-secret \
           -o jsonpath='{.data.password}' | base64 -d)
