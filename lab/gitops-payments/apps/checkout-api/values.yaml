@@ -1,0 +1,30 @@
+# Base values for checkout-api (M12 multi-values-repo fixture).
+#
+# Deliberately a *minimal* chart, unlike shop-api's: no ResourceQuota (so this
+# app can never interact with another namespace's quota mechanics the way M11
+# found shop-api's would), no sidecars, no configMapKeyRef. What this fixture
+# has to prove is routing — that a run for this app writes to *this* repo and
+# not the other one — so everything not serving that is noise.
+
+replicaCount: 1
+
+image:
+  repository: nginxinc/nginx-unprivileged
+  tag: "1.27-alpine"
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8080
+
+probes:
+  readiness:
+    path: /
+    initialDelaySeconds: 3
+    periodSeconds: 5
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    memory: 128Mi

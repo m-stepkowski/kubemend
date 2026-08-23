@@ -1,0 +1,11 @@
+title: "checkout-api (values live in a second values repo) image tag does not exist"
+scope:
+  namespace: shop-payments
+  app: checkout-api
+task_prompt: "checkout-api pods are stuck and a rollout never finished"
+expected_outcome: pr
+symptom_probe:
+  kind: pod_waiting_reason
+  value: ImagePullBackOff
+  timeout_s: 90
+tags: [image, rollout, multi-values, m12]

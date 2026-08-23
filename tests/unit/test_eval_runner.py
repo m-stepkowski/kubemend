@@ -27,7 +27,13 @@ from evals.runner import (
     render_report_md,
     run_sweep,
 )
-from kubemend.config import ChartReposConfig, GitOpsConfig, RunConfig
+from kubemend.config import (
+    ChartReposConfig,
+    GitOpsConfig,
+    RunConfig,
+    ValuesReposConfig,
+    ValuesRepoSpec,
+)
 from kubemend.core.model import RunResult, Scope, Task
 from kubemend.llm.client import LLMClient
 from kubemend.llm.fake import FakeLLM
@@ -53,6 +59,41 @@ def test_split_mode_scenario_included_when_chart_repos_is_configured() -> None:
     names = _scenarios_for_all(cfg)
 
     assert "shop-api-split-chart-repo" in names
+
+
+def test_multi_values_scenario_excluded_from_all_by_default() -> None:
+    names = _scenarios_for_all(RunConfig())
+
+    assert "checkout-api-values-repo" not in names
+    assert "bad-image-tag" in names, "the nine v0.1 scenarios must be unaffected"
+
+
+def test_multi_values_scenario_included_when_values_repos_is_configured() -> None:
+    cfg = RunConfig(
+        gitops=GitOpsConfig(
+            values_repos=ValuesReposConfig(
+                repos={"platform": ValuesRepoSpec(url="https://git.corp/platform/values.git")},
+                default="platform",
+            )
+        )
+    )
+
+    names = _scenarios_for_all(cfg)
+
+    assert "checkout-api-values-repo" in names
+
+
+def test_each_mode_filters_only_its_own_scenarios() -> None:
+    """Split mode must not drag in a multi-values scenario, or vice versa —
+    the two are orthogonal, and a config in one mode is not in the other."""
+    split_only = RunConfig(
+        gitops=GitOpsConfig(chart_repos=ChartReposConfig(url_template="https://git.corp/{app}.git"))
+    )
+
+    names = _scenarios_for_all(split_only)
+
+    assert "shop-api-split-chart-repo" in names
+    assert "checkout-api-values-repo" not in names
 
 
 # -- _p95 / _summarize --------------------------------------------------

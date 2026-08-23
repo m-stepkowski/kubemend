@@ -1,0 +1,88 @@
+# Multi-values-repo (M12) lab config. Used by the checkout-api-values-repo
+# acceptance scenario:
+#
+#   task evals -- -s checkout-api-values-repo -n 1 --model cheap \
+#     --config kubemend.multi-values.yaml
+#
+# Prerequisites: `task lab:up`, `task lab:multi-values-workspaces` (which
+# seeds the second gitea repo and clones both configured values repos).
+#
+# Orthogonal to split mode (M11): M12 routes *which values repo* an app lives
+# in, M11 splits a chart out of its values repo. Neither implies the other,
+# and this config exercises M12 alone — `gitops.chart_repos` is absent, so
+# each routed repo holds its app's chart and values together, exactly like the
+# original single `gitops` repo does.
+
+model:
+  main:
+    provider: anthropic
+    name: claude-sonnet-5
+    max_cost_usd_per_run: 1.00
+  cheap:
+    provider: anthropic
+    name: claude-haiku-4-5
+  pricing_table: config/pricing.yaml
+
+budgets:
+  max_iterations: 15
+  max_wall_seconds: 600
+
+context:
+  result_token_cap: 6000
+  compact_threshold: 0.70
+  model_window_tokens: 200000
+
+observability:
+  provider: prometheus_loki
+  prometheus_url: http://localhost:9090
+  loki_url: http://localhost:3100
+
+kubernetes:
+  kubeconfig: ~/.kube/kubemend-lab-readonly
+  context: kind-kubemend
+
+gitops:
+  backend: gitea
+  # The eval harness builds its single LabHandle workspace from this path
+  # (evals/runner.py `_build_lab`), so for a routed scenario it must name the
+  # repo that scenario's break patch and checker operate on. The *write* path
+  # ignores it entirely once `values_repos` is set — `values_repo_path_for`
+  # returns the route's checkout — so this is a harness limitation, not a
+  # product one. Making `_build_lab` route-aware is the outstanding §11 item.
+  repo_path: .lab/values-workspaces/payments
+  writable_globs:
+    - "apps/**/values*.yaml"
+  base_branch: main
+
+  # Deliberately the WRONG repo, and left that way on purpose: if a
+  # regression ever ignored `values_repos` below, the write path would fall
+  # back to these coordinates and open its PR against `kubemend/gitops`. The
+  # checker asserts the PR names `gitops-payments`, so that regression fails
+  # loudly here instead of passing quietly.
+  gitea_owner: kubemend
+  gitea_repo: gitops
+
+  values_repos:
+    checkout_root: .lab/values-workspaces
+    repos:
+      platform:
+        url: http://localhost:3000/kubemend/gitops.git
+        gitea_owner: kubemend
+        gitea_repo: gitops
+      payments:
+        url: http://localhost:3000/kubemend/gitops-payments.git
+        gitea_owner: kubemend
+        gitea_repo: gitops-payments
+    # The N:1 mapping. Two repos configured, one app routed to each — which is
+    # what makes "the correct repo, out of more than one" a real question.
+    apps:
+      shop-api: platform
+      shop-worker: platform
+      checkout-api: payments
+
+argocd:
+  server: localhost:8080
+  plaintext: true
+  token_file: .lab/argocd-token
+
+policies_dir: policies

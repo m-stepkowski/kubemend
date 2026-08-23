@@ -415,6 +415,96 @@ tasks:
         git clone -q http://localhost:3000/kubemend/shop-api-chart.git "$WS"
         echo "chart workspace ready at $WS"
 
+  lab:payments-values-repo:
+    desc: "M12 multi-values mode: seed a second gitea repo (gitops-payments) holding checkout-api's chart and values — a complete values repo, separate from `gitops`. Backs the checkout-api-values-repo acceptance scenario. Not part of lab:up."
+    deps: [lab:gitea]
+    cmds:
+      - |
+        set -eu
+        PASS="$(cat {{.ROOT_DIR}}/.lab/gitea-admin-password)"
+        AUTH="Authorization: Basic $(printf 'kubemend:%s' "$PASS" | base64 | tr -d '\n')"
+
+        {{.LAB_BIN}}/kubectl -n gitea port-forward svc/gitea-http 3000:3000 >/dev/null 2>&1 &
+        PF=$!
+        trap 'kill $PF 2>/dev/null || true' EXIT
+
+        for i in $(seq 1 30); do
+          if curl -fsS -o /dev/null "http://localhost:3000/api/healthz" 2>/dev/null; then break; fi
+          sleep 1
+        done
+
+        code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+          -H "$AUTH" -H 'Content-Type: application/json' \
+          -d '{"name":"gitops-payments","private":false,"auto_init":false}' \
+          http://localhost:3000/api/v1/user/repos)
+        case "$code" in
+          201) echo "created gitea repo kubemend/gitops-payments" ;;
+          409) echo "gitea repo kubemend/gitops-payments already exists" ;;
+          *)   echo "unexpected status $code creating repo" >&2; exit 1 ;;
+        esac
+
+        # A whole values repo, chart included — unlike M11's chart-only repo.
+        # M12 routes *which* values repo an app lives in, which is orthogonal
+        # to M11's chart/values split, so this repo has the same shape the
+        # original `gitops` repo does, just holding a different app.
+        work=$(mktemp -d)
+        cp -R {{.ROOT_DIR}}/lab/gitops-payments/. "$work/"
+        cd "$work"
+        git init -q -b main
+        git -c user.email=lab@kubemend.local -c user.name=kubemend-lab add -A
+        git -c user.email=lab@kubemend.local -c user.name=kubemend-lab \
+          commit -q -m "lab: seed gitops-payments repo"
+        git -c http.extraHeader="$AUTH" push -q --force \
+          http://localhost:3000/kubemend/gitops-payments.git main
+        cd /
+        rm -rf "$work"
+        echo "pushed lab/gitops-payments to gitea kubemend/gitops-payments"
+
+  lab:multi-values-workspaces:
+    desc: "M12 multi-values mode: clone *both* configured values repos to .lab/values-workspaces/<name> — the local equivalent of the in-cluster init-container clones, for CLI/eval-driven runs. Not part of lab:up."
+    deps: [lab:payments-values-repo]
+    cmds:
+      - |
+        set -eu
+        ROOT={{.ROOT_DIR}}/.lab/values-workspaces
+        PASS="$(cat {{.ROOT_DIR}}/.lab/gitea-admin-password)"
+        AUTH="Authorization: Basic $(printf 'kubemend:%s' "$PASS" | base64 | tr -d '\n')"
+        if ! curl -fsS -o /dev/null http://localhost:3000/api/healthz 2>/dev/null; then
+          {{.LAB_BIN}}/kubectl -n gitea port-forward svc/gitea-http 3000:3000 >/dev/null 2>&1 &
+          PF=$!
+          trap 'kill $PF 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            curl -fsS -o /dev/null http://localhost:3000/api/healthz 2>/dev/null && break
+            sleep 1
+          done
+        fi
+
+        # Both routes in kubemend.multi-values.yaml, materialized. Cloning
+        # only the one the acceptance scenario happens to use would leave the
+        # config describing a checkout that isn't there, and
+        # `resolve_values_route`'s fail-fast would fire the moment anyone ran
+        # a differently-scoped incident against this config.
+        #
+        # Directory name is the repo's *config key*, not the app's: that is
+        # the whole N:1 point — one clone serves every app mapped to it.
+        for pair in "platform:gitops" "payments:gitops-payments"; do
+          name="${pair%%:*}"
+          repo="${pair##*:}"
+          WS="$ROOT/$name"
+          rm -rf "$WS"
+          mkdir -p "$ROOT"
+          # Credentials as a header, never in the remote URL — same reasoning
+          # as lab:workspace. These clones are *write* targets (the agent
+          # proposes against them), so unlike the M11 chart workspace they
+          # need the header persisted in the clone's own config.
+          git -c http.extraHeader="$AUTH" clone -q \
+            "http://localhost:3000/kubemend/$repo.git" "$WS"
+          git -C "$WS" config user.name kubemend
+          git -C "$WS" config user.email kubemend@localhost
+          git -C "$WS" config http.extraHeader "$AUTH"
+          echo "values workspace ready at $WS (kubemend/$repo)"
+        done
+
   lab:workspace:
     # Deliberately does NOT depend on lab:seed. Seeding force-pushes a fresh
     # single-commit history, so re-cloning the workspace would silently undo any
