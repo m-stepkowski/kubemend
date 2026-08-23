@@ -14,7 +14,7 @@ spec:
         any:
           - resources:
               kinds: [Pod]
-              namespaces: [shop]
+              namespaces: [shop, shop-split]
       validate:
         message: "Images must specify a tag."
         pattern:
@@ -26,7 +26,7 @@ spec:
         any:
           - resources:
               kinds: [Pod]
-              namespaces: [shop]
+              namespaces: [shop, shop-split]
       validate:
         # Directly relevant to bad-image-tag: an agent that "fixes" a broken
         # tag by reaching for :latest has made the deployment unreproducible

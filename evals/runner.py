@@ -143,12 +143,19 @@ def _run_one(
     # and identifiable at a glance; the hex suffix keeps same-second runs unique.
     run_id = f"{datetime.now(UTC):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
     task = Task(statement=spec.task_prompt, scope=spec.scope)
-    result = execute_incident(
-        cfg, task, run_id, llm=llm, read_only=False, lab_bin=lab_bin, trace_dir=trace_dir
-    )
-    check = checker(result, lab)
+    # lab.reset() must run even if execute_incident/checker raises — an
+    # uncaught exception here (e.g. a backend ClientError opening the PR)
+    # would otherwise leave the break-patch commit on the gitops repo's base
+    # branch, and the next iteration's apply_break() fails against a repo
+    # that's still mid-break rather than the one that broke it.
+    try:
+        result = execute_incident(
+            cfg, task, run_id, llm=llm, read_only=False, lab_bin=lab_bin, trace_dir=trace_dir
+        )
+        check = checker(result, lab)
+    finally:
+        lab.reset()
     wall = clock() - started
-    lab.reset()
     return IterationResult(spec.name, result, check, wall)
 
 
@@ -244,6 +251,25 @@ def render_report_json(report: SweepReport) -> str:
 
 # -- CLI ----------------------------------------------------------------
 
+SPLIT_MODE_TAG = "split-mode"
+
+
+def _scenarios_for_all(cfg: RunConfig) -> list[str]:
+    """The implicit `-s all` set — everything, except a scenario tagged
+    "split-mode" (M11) when `cfg` isn't split mode.
+
+    Against the default single-repo config such a scenario would always fail
+    (`gitops.chart_repos` unset, no chart route) — not a model or harness
+    problem, a mode mismatch — and silently corrupt the "all scenarios" pass
+    rate for everyone who doesn't pass `--config kubemend.split-mode.yaml`.
+    Still runnable by explicit name (with the matching config) for exactly
+    that reason — only the implicit "all" selection excludes it.
+    """
+    available = list_scenarios()
+    if cfg.gitops.chart_repos is not None:
+        return available
+    return [n for n in available if SPLIT_MODE_TAG not in load_scenario(n)[0].tags]
+
 
 def _build_lab(cfg: RunConfig) -> LabHandle:
     from kubemend.tools.kubernetes.factory import build_kube_client
@@ -295,8 +321,10 @@ def run(
         )
         raise typer.Exit(code=1)
 
+    names = (
+        _scenarios_for_all(cfg) if scenarios == "all" else [s.strip() for s in scenarios.split(",")]
+    )
     available = list_scenarios()
-    names = available if scenarios == "all" else [s.strip() for s in scenarios.split(",")]
     unknown = [name for name in names if name not in available]
     if unknown:
         typer.echo(f"unknown scenario(s): {unknown}; available: {available}", err=True)

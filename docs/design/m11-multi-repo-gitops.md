@@ -290,7 +290,7 @@ cannot simply be re-pointed. **Decided mechanism: option 1 below, confirmed work
 on the pinned CLI/server — no fallback needed.**
 
 Spike setup: a real multi-source `Application` (`lab/gitops/argocd/apps/shop-api-split.yaml`,
-new `lab:m11-spike-chart-repo` Taskfile target seeding a second gitea repo,
+new `lab:split-mode-chart-repo` Taskfile target seeding a second gitea repo,
 `kubemend/shop-api-chart`, holding just the chart) synced clean on the first try —
 server `quay.io/argoproj/argocd:v2.13.2`, CLI `v2.13.1`, both well above the 2.6/2.8
 minimum for multi-source support. A run branch was pushed to the values repo with
@@ -336,7 +336,7 @@ Single-repo mode keeps today's `--local` path untouched — nothing about this c
 **Spike artifacts left in the lab** (not spike-only scaffolding — this is the same
 infra Phase 5's acceptance scenario needs): the `shop-api-chart` gitea repo, the
 `shop-api-split` Application (namespace `shop-split`, isolated from the single-source
-`shop-api` demo), and the `lab:m11-spike-chart-repo` Taskfile target. The scratch run
+`shop-api` demo), and the `lab:split-mode-chart-repo` Taskfile target. The scratch run
 branch (`kubemend/m11-spike-test`) was deleted after the spike; it was throwaway,
 unlike the app/chart-repo infra.
 
@@ -450,5 +450,30 @@ starts.
 4. **Acceptance** (from the plan): a lab scenario where the incident app's chart lives
    in gitea repo A and values in repo B; the run must open a correct values-only draft
    PR against repo B, with the gate's full pipeline passing — including a real diff.
-   The infra for this now exists (`shop-api-chart` repo, `shop-api-split` Application,
-   §6) — Phase 5 wires the actual fault-injection scenario and checker against it.
+   **RESOLVED 2026-08-23.** `shop-api-split-chart-repo` passes against the real lab
+   (`--config kubemend.split-mode.yaml`): 1/1, mean 6 iterations, $0.02, 85s wall.
+   Three real bugs surfaced only by this run, none caught by any unit test — fixed
+   in Phase 5, listed here since they'd bite anyone re-running this from scratch:
+   - `resolve_chart_route` never resolved `checkout_root` to an absolute path; the
+     validator invokes helm with `cwd` set to the *values* repo, so a relative path
+     resolved against the wrong directory. Fixed with `.expanduser().resolve()`.
+   - All 6 files in `policies/` hardcoded `namespaces: [shop]`, never covering the
+     split-mode demo's `shop-split` namespace — `kyverno apply` matched zero
+     resources and the harness's fail-closed `no_policies_applied` check caught it.
+     Extended to `[shop, shop-split]`; `shop-split` stayed its own namespace rather
+     than merging into `shop` because `resourcequota.yaml`'s `ResourceQuota` is
+     unscoped and cumulative per-namespace — sharing `shop` would have let the
+     split-mode demo's pod count interact with the existing `quota-conflict`
+     scenario's quota mechanics.
+   - `evals/runner.py`'s `_run_one` didn't wrap `execute_incident`/`checker` in
+     `try`/`finally`, so an uncaught exception after the loop's own success (a
+     transient `gitea rejected the pull request: invalid username, password or
+     token` — `task lab:gitea`'s helm upgrade had rotated gitea's admin session,
+     invalidating the cached `.lab/gitea-token` mid-session) skipped `lab.reset()`
+     and left the break-patch commit on the gitops repo's base branch, corrupting
+     the next iteration's `apply_break()`. Recovered manually via `task lab:seed`
+     (gitea state). Pre-existing eval-harness robustness gap, not specific to
+     split mode — **fixed**: `lab.reset()` now runs in a `finally` block covering
+     `execute_incident` and `checker`, so a crash anywhere in that stretch still
+     leaves the repo clean for the next iteration; the exception itself still
+     propagates and aborts the sweep, unchanged.

@@ -1,0 +1,13 @@
+diff --git a/apps/shop-api-split/values.yaml b/apps/shop-api-split/values.yaml
+index 0000000..0000000 100644
+--- a/apps/shop-api-split/values.yaml
++++ b/apps/shop-api-split/values.yaml
+@@ -9,7 +9,7 @@
+
+ image:
+   repository: nginxinc/nginx-unprivileged
+-  tag: "1.27-alpine"
++  tag: "1.27-alpine-nonexistent"
+   pullPolicy: IfNotPresent
+
+ service:

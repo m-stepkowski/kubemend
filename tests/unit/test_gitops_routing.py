@@ -25,6 +25,29 @@ def _checkout(root: Path, app: str, origin_url: str) -> Path:
     return checkout
 
 
+def test_a_relative_checkout_root_resolves_against_the_cwd_not_wherever_helm_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: found via a live acceptance-scenario run, not the fixtures
+    above (all of which pass an already-absolute tmp_path). The validator
+    invokes helm with cwd set to the *values* repo, so a checkout_root left
+    relative (a real config, e.g. the committed default
+    `.lab/chart-workspaces`, is written relative on purpose) resolved against
+    the wrong directory and helm reported "path not found" for a checkout
+    that was really there."""
+    monkeypatch.chdir(tmp_path)
+    _checkout(tmp_path / "chart-workspaces", "shop-api", "https://git.corp/shop-api.git")
+    cfg = ChartReposConfig(
+        checkout_root=Path("chart-workspaces"),
+        apps={"shop-api": ChartRepoSpec(url="https://git.corp/shop-api.git")},
+    )
+
+    route = resolve_chart_route("shop-api", cfg)
+
+    assert route.checkout_root.is_absolute()
+    assert route.checkout_root == tmp_path / "chart-workspaces" / "shop-api"
+
+
 def test_an_explicit_apps_entry_wins_over_the_template(tmp_path: Path) -> None:
     _checkout(tmp_path, "shop-api", "https://git.corp/legacy/shop-api.git")
     cfg = ChartReposConfig(

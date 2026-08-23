@@ -21,17 +21,38 @@ from evals.runner import (
     IterationResult,
     ScenarioSummary,
     _p95,
+    _scenarios_for_all,
     _summarize,
     render_report_json,
     render_report_md,
     run_sweep,
 )
-from kubemend.config import RunConfig
+from kubemend.config import ChartReposConfig, GitOpsConfig, RunConfig
 from kubemend.core.model import RunResult, Scope, Task
 from kubemend.llm.client import LLMClient
 from kubemend.llm.fake import FakeLLM
 
 SCOPE = Scope(namespace="shop", app="shop-api")
+
+
+# -- _scenarios_for_all (M11) --------------------------------------------
+
+
+def test_split_mode_scenario_excluded_from_all_by_default() -> None:
+    names = _scenarios_for_all(RunConfig())
+
+    assert "shop-api-split-chart-repo" not in names
+    assert "bad-image-tag" in names, "the nine v0.1 scenarios must be unaffected"
+
+
+def test_split_mode_scenario_included_when_chart_repos_is_configured() -> None:
+    cfg = RunConfig(
+        gitops=GitOpsConfig(chart_repos=ChartReposConfig(url_template="https://git.corp/{app}.git"))
+    )
+
+    names = _scenarios_for_all(cfg)
+
+    assert "shop-api-split-chart-repo" in names
 
 
 # -- _p95 / _summarize --------------------------------------------------
@@ -294,3 +315,24 @@ def test_run_sweep_resets_even_when_the_symptom_never_manifests(
     run_sweep(["flaky"], 1, RunConfig(), llm=FakeLLM([]), lab=lab, scenarios_root=tmp_path)
 
     assert lab.calls == ["snapshot", "reset", "apply_break:flaky", "reset"]
+
+
+def test_run_sweep_resets_even_when_execute_incident_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An uncaught exception after the break has been applied (e.g. a backend
+    ClientError opening the PR) must not skip lab.reset() — otherwise the
+    next iteration's apply_break() fails against a repo that's still
+    mid-break rather than the one that broke it."""
+    _write_scenario(tmp_path, "s1")
+
+    def fake_execute_incident(*a: object, **k: object) -> RunResult:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("kubemend.cli.execute_incident", fake_execute_incident)
+    lab = FakeLab()
+
+    with pytest.raises(RuntimeError, match="boom"):
+        run_sweep(["s1"], 1, RunConfig(), llm=FakeLLM([]), lab=lab, scenarios_root=tmp_path)
+
+    assert lab.calls == ["snapshot", "reset", "apply_break:s1", "wait_for_symptom", "reset"]

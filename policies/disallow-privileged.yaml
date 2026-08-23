@@ -5,9 +5,11 @@
 # PR is allowed to pass the gate. Admission parity is the point — a change the
 # agent proposes must fail the same way it would fail in a real cluster.
 #
-# Scoped to the `shop` namespace. The infrastructure namespaces run upstream
-# charts we do not control, and enforcing our house rules on them would only
-# teach us that Prometheus mounts a hostPath.
+# Scoped to `shop` and `shop-split` (M11's split-mode demo app, isolated in
+# its own namespace so it can't interact with shop-api/shop-worker's quota).
+# The infrastructure namespaces run upstream charts we do not control, and
+# enforcing our house rules on them would only teach us that Prometheus
+# mounts a hostPath.
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:
@@ -24,7 +26,7 @@ spec:
         any:
           - resources:
               kinds: [Pod]
-              namespaces: [shop]
+              namespaces: [shop, shop-split]
       validate:
         message: >-
           Privileged mode is not allowed. Set

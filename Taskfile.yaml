@@ -342,8 +342,8 @@ tasks:
         rm -rf "$work"
         echo "pushed lab/gitops to gitea"
 
-  lab:m11-spike-chart-repo:
-    desc: "M11 design doc §11 risk-1 spike: seed a second gitea repo holding just shop-api's chart (no values), for the multi-source Argo diff spike. Not part of lab:up."
+  lab:split-mode-chart-repo:
+    desc: "M11 split mode: seed a second gitea repo holding a standalone shop-api-split chart (no values — those live in the central gitops repo). Backs both the design doc §11 risk-1 diff spike and the shop-api-split-chart-repo acceptance scenario. Not part of lab:up."
     deps: [lab:gitea]
     cmds:
       - |
@@ -371,21 +371,49 @@ tasks:
         esac
 
         # Chart only — Chart.yaml + templates/, no values*.yaml, since the
-        # values live in the central "gitops" repo in split mode.
+        # values live in the central "gitops" repo in split mode. Renamed to
+        # "shop-api-split" (Chart.yaml's `name:`, which every template's
+        # resource naming/labels derive from via .Chart.Name) so its
+        # resources never collide with the single-source shop-api demo's,
+        # and so `argocd app diff shop-api-split` (the app name the
+        # values-path convention apps/shop-api-split/values.yaml derives)
+        # targets this chart's own Application, not the single-source one.
         work=$(mktemp -d)
         mkdir -p "$work/templates"
-        cp {{.ROOT_DIR}}/lab/gitops/apps/shop-api/Chart.yaml "$work/"
+        sed 's/^name: shop-api$/name: shop-api-split/' \
+          {{.ROOT_DIR}}/lab/gitops/apps/shop-api/Chart.yaml > "$work/Chart.yaml"
         cp {{.ROOT_DIR}}/lab/gitops/apps/shop-api/templates/*.yaml "$work/templates/"
         cd "$work"
         git init -q -b main
         git -c user.email=lab@kubemend.local -c user.name=kubemend-lab add -A
         git -c user.email=lab@kubemend.local -c user.name=kubemend-lab \
-          commit -q -m "lab: seed shop-api-chart repo (M11 spike)"
+          commit -q -m "lab: seed shop-api-split chart repo"
         git -c http.extraHeader="$AUTH" push -q --force \
           http://localhost:3000/kubemend/shop-api-chart.git main
         cd /
         rm -rf "$work"
-        echo "pushed shop-api chart to gitea kubemend/shop-api-chart"
+        echo "pushed shop-api-split chart to gitea kubemend/shop-api-chart"
+
+  lab:split-mode-chart-workspace:
+    desc: "M11 split mode: clone the shop-api-chart repo to .lab/chart-workspaces/shop-api-split — the local equivalent of the in-cluster init-container clone (§7), for CLI/eval-driven split-mode runs. Not part of lab:up."
+    deps: [lab:split-mode-chart-repo]
+    cmds:
+      - |
+        set -eu
+        WS={{.ROOT_DIR}}/.lab/chart-workspaces/shop-api-split
+        if ! curl -fsS -o /dev/null http://localhost:3000/api/healthz 2>/dev/null; then
+          {{.LAB_BIN}}/kubectl -n gitea port-forward svc/gitea-http 3000:3000 >/dev/null 2>&1 &
+          PF=$!
+          trap 'kill $PF 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            curl -fsS -o /dev/null http://localhost:3000/api/healthz 2>/dev/null && break
+            sleep 1
+          done
+        fi
+        rm -rf "$WS"
+        mkdir -p "$(dirname "$WS")"
+        git clone -q http://localhost:3000/kubemend/shop-api-chart.git "$WS"
+        echo "chart workspace ready at $WS"
 
   lab:workspace:
     # Deliberately does NOT depend on lab:seed. Seeding force-pushes a fresh

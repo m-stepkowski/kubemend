@@ -239,6 +239,51 @@ class GitBackend(Protocol):
 
 Two implementations: `LocalGitBackend` (plain git against a local clone; "PR" = branch + generated `PROPOSAL.md`; used in CI and most lab runs) and `GiteaBackend` (real draft PR via Gitea API against the in-cluster Gitea — used for the full Argo-visible demo). A `GitHubBackend` is a straightforward third implementation later. PR body is generated from rationale + evidence refs + the verdict's check table — this PR body is a demo asset; make it good.
 
+### 4.3 Split mode (M11): chart-per-app-repo with a central values repo
+
+`gitops.chart_repos: ChartReposConfig | None` (default `None`) is a second,
+optional GitOps repo shape: each app's Helm chart lives in its own repo, and
+`gitops.repo_path` holds only the central values repo. `None` is
+byte-for-byte today's single-repo behavior — nothing below runs unless it's
+set.
+
+`kubemend/tools/gitops/routing.py`'s `resolve_chart_route(app, cfg)` is the
+one place that decides which repo an app's chart comes from: an explicit
+`chart_repos.apps[app]` entry wins, else `chart_repos.url_template` with
+`{app}` substituted, else `ChartRouteError`. Either way the checkout is
+expected at `chart_repos.checkout_root / app` (resolved to an absolute path
+at wiring time — see the design doc for why relative paths broke this);
+`resolve_chart_route` fails fast if that checkout is missing or its `origin`
+remote doesn't match the configured URL, rather than letting a stale clone
+render silently wrong manifests.
+
+Split mode's other consequences, each confined to the module already
+responsible for that concern — no changes under `kubemend/core/`:
+
+- **`reader.py`** — the `"chart"` tool-param key resolves to a second
+  `GitOpsReader` rooted at `checkout_root/<app>`, alongside `"values"`'s
+  reader over the values repo.
+- **`gitea_backend.py`** — split mode's Argo diff (`--revisions`, below)
+  reads a pushed remote ref rather than the local working tree, so
+  `GiteaBackend` gained a `push_on_write` flag: every `write_files()` call
+  pushes immediately, not just at `open_draft_pr()` time.
+- **`validator.py`** — split-mode render passes `--values` explicitly
+  (single-repo relies on helm's implicit values.yaml pickup, which breaks
+  once chart and values live in different checkouts) and the diff stage uses
+  Argo CD's multi-source `--revisions kubemend/<run_id> --source-positions 2`
+  against the chart (position 1) and values (position 2) sources — a
+  hardcoded convention, not auto-detected from the live Application spec.
+  There is no `kubectl diff` fallback in split mode: an unconfigured Argo CD
+  identity is a wiring problem, not something to soft-degrade into.
+- **Deployment** — `charts/kubemend/templates/job.yaml` mounts a second,
+  unconditional `emptyDir` at `/workspace-charts` (`checkout_root` in-cluster)
+  alongside `/workspace`; one init container per chart repo clones to
+  `/workspace-charts/<app>`. See `charts/kubemend/README.md`'s "Split mode"
+  section.
+
+Full design rationale, rejected alternatives, and the acceptance scenario:
+`docs/design/m11-multi-repo-gitops.md`.
+
 ---
 
 ## 5. Verification gate

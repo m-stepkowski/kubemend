@@ -14,7 +14,7 @@ spec:
         any:
           - resources:
               kinds: [Pod]
-              namespaces: [shop]
+              namespaces: [shop, shop-split]
       validate:
         # A remediation agent that can choose image references is a supply-chain
         # surface. This is the control that keeps a plausible-looking fix from

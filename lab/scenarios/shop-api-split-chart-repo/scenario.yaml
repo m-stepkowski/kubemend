@@ -1,0 +1,11 @@
+title: "shop-api-split (chart lives in a separate repo) image tag does not exist"
+scope:
+  namespace: shop-split
+  app: shop-api-split
+task_prompt: "shop-api-split pods are stuck and a rollout never finished"
+expected_outcome: pr
+symptom_probe:
+  kind: pod_waiting_reason
+  value: ImagePullBackOff
+  timeout_s: 90
+tags: [image, rollout, split-mode, m11]

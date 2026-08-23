@@ -6,11 +6,11 @@ repeating it. If you just want to see it work first, the lab quickstart in
 [`README.md`](../README.md#quickstart) is faster — this doc is for pointing
 kubemend at a real cluster and a real GitOps repo.
 
-Today's GitOps model is **one checked-out repo** holding both the app
-charts and their values (see [`IMPLEMENTATION_PLAN.md`](../IMPLEMENTATION_PLAN.md)
-M11/M12 for the planned multi-repo shapes — chart-per-app-repo with a
-central values repo, and multiple values repos — neither shipped yet). If
-your setup already looks like that, this doc doesn't apply cleanly yet.
+Two GitOps repo shapes are supported. **Single-repo** (the default) is one
+checked-out repo holding both the app charts and their values. **Split
+mode** (M11) is chart-per-app-repo with one central values repo — see
+[`IMPLEMENTATION_PLAN.md`](../IMPLEMENTATION_PLAN.md) M12 for the
+still-unshipped multiple-values-repos shape. Step 3 below covers both.
 
 ## Step 1 — Which observability backend do you have?
 
@@ -51,16 +51,32 @@ Full wiring for both: [`charts/kubemend/README.md`](../charts/kubemend/README.md
 
 ## Step 3 — Confirm your GitOps repo shape
 
-The write path (`kubemend/tools/gitops/*_backend.py`) expects one
-already-cloned repo at `/workspace`, holding both charts and values. It
-doesn't clone anything itself — see `charts/kubemend/README.md`'s "GitOps
-repo checkout and credentials" section for the `job.extraInitContainers`
-pattern. The two things worth deciding now, since they're config, not code:
+**Single-repo** (default, `gitops.chart_repos` unset): the write path
+(`kubemend/tools/gitops/*_backend.py`) expects one already-cloned repo at
+`/workspace`, holding both charts and values. It doesn't clone anything
+itself — see `charts/kubemend/README.md`'s "GitOps repo checkout and
+credentials" section for the `job.extraInitContainers` pattern.
+
+**Split mode** (`gitops.chart_repos` set): each app's chart lives in its own
+repo, the values repo stays at `/workspace`, and chart checkouts go under
+`gitops.chart_repos.checkout_root` (`/workspace-charts` in-cluster) — one
+directory per app, `checkout_root/<app>`. Either an explicit
+`chart_repos.apps.<app>` entry or a `chart_repos.url_template` resolves
+which repo an app's chart comes from. See `charts/kubemend/README.md`'s
+"Split mode" section for the full init-container example, and
+`docs/design/m11-multi-repo-gitops.md` for the design rationale.
+
+The two things worth deciding now either way, since they're config, not
+code:
 
 - **`gitops.writable_globs`** (default `apps/**/values*.yaml`) — must match
   where your values files actually live relative to the repo root.
 - **`gitops.base_branch`** — the branch kubemend proposes against; it never
   pushes to this branch directly, only opens a PR/branch off it.
+
+Split mode additionally requires the Argo CD diff path (`argocd_bin` +
+`argocd_token`) — there is no `kubectl diff` fallback for a multi-source
+Application.
 
 ## Step 4 — Install
 

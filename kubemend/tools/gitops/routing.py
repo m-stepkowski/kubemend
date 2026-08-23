@@ -76,7 +76,13 @@ def resolve_chart_route(app: str, cfg: ChartReposConfig) -> ChartRoute:
             base_branch="main",
         )
 
-    checkout_root = cfg.checkout_root / app
+    # Resolved, not left relative: the validator invokes helm with cwd set to
+    # the *values* repo (validator.py's _render), so a relative checkout_root
+    # would resolve against the wrong directory entirely — found via a live
+    # acceptance-scenario run, not by the unit tests, which all happened to
+    # use already-absolute tmp_path checkouts. Same convention cli.py already
+    # applies to gitops.repo_path.
+    checkout_root = Path(cfg.checkout_root).expanduser().resolve() / app
     _check_checkout(checkout_root, spec.url, app)
     return ChartRoute(
         checkout_root=checkout_root,
