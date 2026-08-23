@@ -342,6 +342,51 @@ tasks:
         rm -rf "$work"
         echo "pushed lab/gitops to gitea"
 
+  lab:m11-spike-chart-repo:
+    desc: "M11 design doc §11 risk-1 spike: seed a second gitea repo holding just shop-api's chart (no values), for the multi-source Argo diff spike. Not part of lab:up."
+    deps: [lab:gitea]
+    cmds:
+      - |
+        set -eu
+        PASS="$(cat {{.ROOT_DIR}}/.lab/gitea-admin-password)"
+        AUTH="Authorization: Basic $(printf 'kubemend:%s' "$PASS" | base64 | tr -d '\n')"
+
+        {{.LAB_BIN}}/kubectl -n gitea port-forward svc/gitea-http 3000:3000 >/dev/null 2>&1 &
+        PF=$!
+        trap 'kill $PF 2>/dev/null || true' EXIT
+
+        for i in $(seq 1 30); do
+          if curl -fsS -o /dev/null "http://localhost:3000/api/healthz" 2>/dev/null; then break; fi
+          sleep 1
+        done
+
+        code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+          -H "$AUTH" -H 'Content-Type: application/json' \
+          -d '{"name":"shop-api-chart","private":false,"auto_init":false}' \
+          http://localhost:3000/api/v1/user/repos)
+        case "$code" in
+          201) echo "created gitea repo kubemend/shop-api-chart" ;;
+          409) echo "gitea repo kubemend/shop-api-chart already exists" ;;
+          *)   echo "unexpected status $code creating repo" >&2; exit 1 ;;
+        esac
+
+        # Chart only — Chart.yaml + templates/, no values*.yaml, since the
+        # values live in the central "gitops" repo in split mode.
+        work=$(mktemp -d)
+        mkdir -p "$work/templates"
+        cp {{.ROOT_DIR}}/lab/gitops/apps/shop-api/Chart.yaml "$work/"
+        cp {{.ROOT_DIR}}/lab/gitops/apps/shop-api/templates/*.yaml "$work/templates/"
+        cd "$work"
+        git init -q -b main
+        git -c user.email=lab@kubemend.local -c user.name=kubemend-lab add -A
+        git -c user.email=lab@kubemend.local -c user.name=kubemend-lab \
+          commit -q -m "lab: seed shop-api-chart repo (M11 spike)"
+        git -c http.extraHeader="$AUTH" push -q --force \
+          http://localhost:3000/kubemend/shop-api-chart.git main
+        cd /
+        rm -rf "$work"
+        echo "pushed shop-api chart to gitea kubemend/shop-api-chart"
+
   lab:workspace:
     # Deliberately does NOT depend on lab:seed. Seeding force-pushes a fresh
     # single-commit history, so re-cloning the workspace would silently undo any

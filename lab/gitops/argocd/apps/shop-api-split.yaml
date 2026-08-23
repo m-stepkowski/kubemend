@@ -1,0 +1,33 @@
+# M11 design doc §11 risk 1 spike: a multi-source Application proving out
+# split-mode (chart repo separate from the central values repo) against the
+# pinned Argo CD v2.13.1/v2.13.2, and the fixture the design's §6 diff
+# mechanism gets decided against. Deployed to its own namespace
+# (shop-split) so it never interacts with the single-source shop-api demo.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shop-api-split
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: http://gitea-http.gitea.svc.cluster.local:3000/kubemend/shop-api-chart.git
+      targetRevision: main
+      path: .
+      helm:
+        valueFiles:
+          - $values/apps/shop-api-split/values.yaml
+    - repoURL: http://gitea-http.gitea.svc.cluster.local:3000/kubemend/gitops.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: shop-split
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
