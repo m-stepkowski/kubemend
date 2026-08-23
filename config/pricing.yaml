@@ -31,6 +31,11 @@ models:
   # trusting these for a committed baseline. Sourced from public pricing
   # pages at the time this milestone landed; provider pricing changes
   # without notice, and these entries will not update themselves.
+  #
+  # `gpt-4.1-mini` below is the exception: verified against real billing in
+  # M14, and the check found the placeholder's cache_read was 2x too high.
+  # Treat that as the expected outcome for the rest of this block rather
+  # than the surprise — none of the others has been checked.
 
   # DeepSeek's own API is OpenAI-compatible; cache reads are automatic and
   # billed near-free (no separate cache_write charge to model).
@@ -56,10 +61,27 @@ models:
   # because gpt-5.6-luna (the reasoning-tier cheap model) rejects tool
   # calls on this endpoint unless reasoning_effort=none is set, which this
   # client does not do automatically (see openai_client.py, decisions.md).
+  #
+  # VERIFIED against real billing 2026-08-23 (M14). `cache_read` was 0.20
+  # here and is wrong: OpenAI bills cached input at 25% of input, not 50%.
+  # Checked by totalling every gpt-4.1-mini trace (747,156 fresh input +
+  # 2,153,600 cached + 72,367 output = 2,973,123 tokens, 222 API calls)
+  # against the account's own usage page for the same project (3,068,152
+  # tokens, 256 requests, $0.68 billed):
+  #
+  #   at cache_read 0.20 -> $0.845 computed, ~$0.87 scaled to the dashboard's
+  #                         token count. 28% above what was actually billed.
+  #   at cache_read 0.10 -> $0.630 computed, ~$0.65 scaled. Within ~5% of the
+  #                         $0.68 billed, the residual being the ~34 requests
+  #                         present in the account but not in local traces.
+  #
+  # This one matters more than its size suggests: cache reads are ~70% of
+  # this harness's input tokens, so the old value overstated every cost
+  # figure in every eval report by roughly a quarter.
   gpt-4.1-mini:
     input: 0.40
     output: 1.60
-    cache_read: 0.20
+    cache_read: 0.10
 
   # Bedrock model IDs are region/version-stamped strings (e.g.
   # "us.anthropic.claude-sonnet-5-v1:0") — copy the exact ID from your AWS
