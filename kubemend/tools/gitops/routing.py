@@ -1,0 +1,104 @@
+"""Chart-repo routing for split mode (M11 design doc §2-3).
+
+`resolve_chart_route` is the only place `app -> chart repo` resolution happens.
+It is a pure function called from `cli.py`'s factories at wiring time, before
+the loop starts — never from `kubemend/core/`, and never re-evaluated mid-run,
+since a run's `Scope` names exactly one app (design doc §1). Routing never
+consults anything the model produced; it keys off `Task.scope.app`, which the
+harness sets.
+
+Only called when `GitOpsConfig.chart_repos is not None` (split mode) — the
+caller owns that check, so this module has no single-repo-mode branch to keep
+in sync with anything.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+from git import InvalidGitRepositoryError, NoSuchPathError, Repo
+
+from kubemend.config import ChartReposConfig, ChartRepoSpec
+
+
+class ChartRouteError(RuntimeError):
+    """Split mode is configured but the route for an app can't be resolved,
+    or the checkout it resolves to isn't there or isn't the right repo.
+    Always a wiring-time failure — the run never starts."""
+
+
+@dataclass(frozen=True)
+class ChartRoute:
+    # Where the app's chart checkout's .git lives — checkout_root / app. This
+    # is the root a GitOpsReader over the chart repo resolves reads against.
+    checkout_root: Path
+    # The chart's directory *within* that checkout, relative — "." for a repo
+    # whose root is the chart itself. Read-side path prefixing and the
+    # validator's render both use this, joined onto checkout_root differently
+    # (a git-relative prefix vs. a real filesystem path), hence kept separate
+    # rather than pre-joined.
+    chart_path: str
+    base_branch: str
+    url: str
+
+    @property
+    def chart_dir(self) -> Path:
+        """The real filesystem directory holding Chart.yaml/templates/ — what
+        the validator's `helm template` needs."""
+        return self.checkout_root / self.chart_path
+
+
+def resolve_chart_route(app: str, cfg: ChartReposConfig) -> ChartRoute:
+    """Resolve `app`'s chart repo (design doc §3's three-step precedence),
+    then validate its checkout actually exists and is the right repo.
+
+    1. `cfg.apps[app]` if present — an explicit entry always wins.
+    2. Else `cfg.url_template` with `{app}` substituted, `cfg.template_chart_path`,
+       base branch "main".
+    3. Else a `ChartRouteError` naming exactly what config to add.
+
+    A missing or origin-mismatched checkout is the same class of error as a
+    missing route: all three are wiring-time failures with no story for
+    catching them mid-run, so there's exactly one exception type.
+    """
+    spec = cfg.apps.get(app)
+    if spec is None:
+        if cfg.url_template is None:
+            raise ChartRouteError(
+                f"split mode is configured but no chart repo route exists for app "
+                f"{app!r}; add gitops.chart_repos.apps.{app} or set "
+                "gitops.chart_repos.url_template"
+            )
+        spec = ChartRepoSpec(
+            url=cfg.url_template.format(app=app),
+            chart_path=cfg.template_chart_path,
+            base_branch="main",
+        )
+
+    checkout_root = cfg.checkout_root / app
+    _check_checkout(checkout_root, spec.url, app)
+    return ChartRoute(
+        checkout_root=checkout_root,
+        chart_path=spec.chart_path,
+        base_branch=spec.base_branch,
+        url=spec.url,
+    )
+
+
+def _check_checkout(checkout_root: Path, url: str, app: str) -> None:
+    """Fail-fast validation (design doc §2, "why url is in config"): catches
+    the routing bug class — right checkout directory, wrong repo cloned into
+    it — before any model tokens are spent, not partway through a render."""
+    try:
+        origin = Repo(checkout_root).remotes.origin.url
+    except (InvalidGitRepositoryError, NoSuchPathError) as exc:
+        raise ChartRouteError(
+            f"no chart checkout at {checkout_root} for app {app!r} (route: {url!r}) — "
+            "the Job's init containers must clone it there before the run starts"
+        ) from exc
+    if origin != url:
+        raise ChartRouteError(
+            f"chart checkout at {checkout_root} for app {app!r} has origin {origin!r}, "
+            f"expected {url!r} — wrong repo cloned into this app's checkout directory"
+        )
