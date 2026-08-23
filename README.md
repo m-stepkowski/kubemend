@@ -229,6 +229,13 @@ sweeps during development, are lower and cheaper — see
 
 ## Deploy in-cluster
 
+Pointing kubemend at your own cluster and GitOps repo, rather than the lab,
+involves a few decisions (which observability backend, which trigger,
+whether your GitOps repo matches the single-repo shape kubemend expects
+today) — [`docs/getting-started.md`](docs/getting-started.md) walks that
+sequence end to end. The rest of this section covers the mechanics once
+those decisions are made.
+
 A `kubemend run` from a laptop needs a kubeconfig holding the full read-only
 RBAC kubemend uses. The [Helm chart](charts/kubemend/) exists to narrow that:
 install it once and an on-call engineer only needs permission to *create a
