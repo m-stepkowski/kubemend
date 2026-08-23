@@ -50,6 +50,9 @@ observability:
   # Port-forwarded lab endpoints (task lab:forward)
   prometheus_url: http://localhost:9090
   loki_url: http://localhost:3100
+  # Self-hosted Tempo, only read when enable.traces is true (task lab:tempo
+  # installs one into the lab cluster; task lab:forward exposes :3200).
+  tempo_url: http://localhost:3200
 
   # Which pillars the model may query. `provider` says *where* data comes
   # from; this says *whether* to ask at all. A disabled pillar registers no

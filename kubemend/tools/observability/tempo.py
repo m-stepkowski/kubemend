@@ -69,15 +69,11 @@ class TempoProvider:
 
         limit = max(1, min(query.limit, MAX_LIMIT))
         params: dict[str, str | int] = {
-            "q": query.query,
+            "q": _with_min_duration(query.query, query.min_duration_ms),
             "start": int(start.timestamp()),
             "end": int(end.timestamp()),
             "limit": limit,
         }
-        if query.min_duration_ms is not None:
-            # Tempo takes a duration string, not a number; ms is the unit an
-            # incident is actually discussed in.
-            params["minDuration"] = f"{int(query.min_duration_ms)}ms"
 
         found = self._get("/api/search", params).get("traces", [])
         if not isinstance(found, list) or not found:
@@ -143,6 +139,25 @@ class TempoProvider:
         if not isinstance(parsed, dict):
             raise ClientError("tempo returned an unexpected body")
         return parsed
+
+
+def _with_min_duration(traceql: str, min_duration_ms: float | None) -> str:
+    """Express a duration floor as TraceQL, because the API's own parameter
+    does not apply to TraceQL searches.
+
+    Tempo's `minDuration` query parameter belongs to the older tag-based
+    search. When `q` carries TraceQL it is **silently ignored** — a 5s floor
+    still returned a 900ms trace against a real Tempo, which the unit tests
+    could never have caught: they asserted the parameter was *sent*, not that
+    it was honoured.
+
+    Composed as a second spanset (`{...} && {duration > Nms}`) rather than
+    edited into the caller's braces: that needs no parsing of a query the
+    model wrote, and works for `{}` as readily as for a filled selector.
+    """
+    if min_duration_ms is None:
+        return traceql
+    return f"{traceql.strip()} && {{duration > {int(min_duration_ms)}ms}}"
 
 
 def _service_name(batch: dict[str, Any]) -> str:

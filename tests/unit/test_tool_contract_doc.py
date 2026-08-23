@@ -53,6 +53,9 @@ def _specs_by_heading() -> dict[tuple[str, str], ToolSpec]:
         ("query_traces", "grafana_cloud"): tempo_traces_tool_spec(
             TempoProvider("https://tempo-prod-1.grafana.net")
         ),
+        ("query_traces", "prometheus_loki"): tempo_traces_tool_spec(
+            TempoProvider("http://tempo:3200")
+        ),
         ("query_traces", "datadog"): datadog_traces_tool_spec(
             DatadogProvider(site="datadoghq.com", api_key="k", app_key="k")
         ),
