@@ -14,15 +14,32 @@ per-team or per-environment layouts. Step 3 below covers all three.
 
 ## Step 1 — Which observability backend do you have?
 
-kubemend reads metrics and logs to diagnose an incident; it never reads
-traces (no third pillar yet — see `IMPLEMENTATION_PLAN.md` M13). Three
-backends are supported today, one registered per run:
+kubemend reads metrics and logs to diagnose an incident, and traces if you
+turn them on. One provider is registered per run:
 
-| You have | `observability.provider` |
-|---|---|
-| Self-hosted Prometheus + Loki | `prometheus_loki` (default) |
-| Datadog | `datadog` |
-| Grafana Cloud (hosted Mimir/Loki) | `grafana_cloud` |
+| You have | `observability.provider` | metrics | logs | traces |
+|---|---|:--:|:--:|:--:|
+| Self-hosted Prometheus + Loki | `prometheus_loki` (default) | ✅ | ✅ | — |
+| Datadog | `datadog` | ✅ | ✅ | ✅ (APM) |
+| Grafana Cloud | `grafana_cloud` | ✅ | ✅ | ✅ (Tempo) |
+
+**Traces are opt-in.** `observability.enable.traces` defaults to `false`,
+because plenty of clusters run no tracing at all and there is no sensible
+endpoint to guess. Turn it on only if you actually have APM/Tempo data:
+
+```yaml
+observability:
+  provider: grafana_cloud
+  enable:
+    metrics: true
+    logs: true
+    traces: true      # then set grafana_cloud_tempo_url + _instance_id
+```
+
+The same switch works the other way — a cluster with logs but no Prometheus
+can set `metrics: false` and the model simply never sees that tool. Enabling
+a pillar your provider cannot serve (traces on `prometheus_loki`) fails at
+startup with both halves named, rather than at the first query.
 
 Exact config fields and credential setup: README's
 ["Observability providers"](../README.md#observability-providers) section.

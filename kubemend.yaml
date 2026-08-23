@@ -51,6 +51,17 @@ observability:
   prometheus_url: http://localhost:9090
   loki_url: http://localhost:3100
 
+  # Which pillars the model may query. `provider` says *where* data comes
+  # from; this says *whether* to ask at all. A disabled pillar registers no
+  # tool, so the model never spends an iteration discovering a backend that
+  # isn't there. Traces default off — plenty of clusters run no tracing, and
+  # unlike metrics/logs there is no sane endpoint to guess. Enabling a pillar
+  # the provider cannot serve fails at startup, naming both halves.
+  enable:
+    metrics: true
+    logs: true
+    traces: false
+
   # Datadog as the observability provider instead (not the default — the lab
   # runs Prometheus/Loki by default; `task lab:datadog-agent` optionally also
   # reports the lab's own cluster data to a real Datadog org, see README):
@@ -70,6 +81,13 @@ observability:
   #   grafana_cloud_loki_url: https://logs-prod-NNN.grafana.net
   #   grafana_cloud_loki_instance_id: "654321"
   #   grafana_cloud_token_file: .lab/grafana-cloud-token
+  # Tempo, only needed when enable.traces is true (one Access Policy token
+  # covers all three signals, so token_file above is reused):
+  #   grafana_cloud_tempo_url: https://tempo-prod-NN-prod-xx.grafana.net
+  #   grafana_cloud_tempo_instance_id: "112233"
+  #
+  # Traces on Datadog need no extra endpoint config — APM span search uses the
+  # same api/app keys as metrics and logs; just set enable.traces: true.
   #
   # One shared Access Policy token for both, unlike Datadog's two separate
   # keys — same file-based idiom as datadog_api_key_file above.

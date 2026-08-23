@@ -109,12 +109,10 @@ class ReadOnlyGate:
 
 
 def build_read_only_registry(cfg: RunConfig) -> ToolRegistry:
-    metrics_spec, logs_spec = build_observability_tools(cfg.observability)
     reader = KubernetesReader(build_kube_client(cfg.kubernetes))
     return ToolRegistry(
         [
-            metrics_spec,
-            logs_spec,
+            *build_observability_tools(cfg.observability),
             k8s_tool_spec(reader),
         ],
         result_token_cap=cfg.context.result_token_cap,

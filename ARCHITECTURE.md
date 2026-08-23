@@ -182,7 +182,7 @@ Non-Claude models on Bedrock (via the Converse API) are explicitly out of scope 
 
 `ToolSpec` = name, description, JSON Schema params, executor callable, `tier` (`read` | `propose` | `verify`), per-tool timeout. `registry.execute()` wraps every executor with: argument validation against the schema (validation errors go back to the model as `{"error": {"type": "invalid_arguments", ...}}`), timeout, single-retry rule (I2), truncation (§2.3), redaction (§3.3), timing, and trace emission. Executors themselves stay pure: `args -> payload`.
 
-### 3.2 The five v0.1 tools
+### 3.2 The tool set (five in v0.1, plus `query_traces` from M13)
 
 Exact schemas live in `docs/knowledge/tool-contracts.md`; summary:
 
@@ -192,17 +192,35 @@ Exact schemas live in `docs/knowledge/tool-contracts.md`; summary:
 | `search_logs(logql, start, end, limit, direction)` | read | Loki HTTP API (`/loki/api/v1/query_range`) | `limit` ≤ 500 enforced server-side by executor. Model writes LogQL directly. |
 | ↳ `datadog` provider (M9) | read | Datadog v2 API (`/api/v2/query/timeseries`, `/api/v2/logs/events/search`) | `query_metrics`/`search_logs` argument names are provider-specific — `metric_query`/`log_query`, not `promql`/`logql` — since each provider's own query language is exposed directly rather than translated. Result shapes (`MetricResult`/`LogResult`) are identical either way. Exact schemas per provider: `docs/knowledge/tool-contracts.md`. |
 | ↳ `grafana_cloud` provider | read | Grafana Cloud hosted Mimir/Loki (same `/api/v1/query_range`/`/loki/api/v1/query_range` APIs) | Reuses `PrometheusProvider`/`LokiProvider` unchanged apart from HTTP Basic Auth on the client — schema is identical to `prometheus_loki` (`promql`/`logql`, not renamed). Only the transport (auth, hosted URLs) differs. |
+| `query_traces(traceql\|span_query, start, end, min_duration_ms?, limit)` | read | Tempo (`/api/search` + `/api/traces/<id>`) or Datadog APM (`/api/v2/spans/events/search`) | M13, **opt-in**: `observability.enable.traces` defaults off, and a disabled pillar registers no tool at all. Spans come back flat and slowest-first, never as a tree. `prometheus_loki` does not serve traces — enabling it there fails at wiring time. |
 | `get_k8s_state(kind, namespace, name?, selector?, include_events)` | read | kubernetes Python client, **read-only kubeconfig** | Allow-listed kinds (pods, deploy, sts, svc, cm *keys only*, events, hpa, quota, ingress). Secrets: names/keys only, never values. Redaction §3.3. |
 | `propose_git_change(files, rationale, incident_ref)` | propose | Git backend (§4) | `files` restricted by path policy: `apps/**/values*.yaml` only in v0.1. One active branch per run; repeated calls amend it. |
 | `validate_change()` | verify | Validator pipeline (§5) | No arguments — always validates the run's active branch. Callable by the model for cheap mid-loop self-checks; the gate re-runs it independently at termination (I1). |
 
-Observability providers implement one interface so the module is swappable later (Dynatrace/CloudWatch as future drop-ins). As of M9 this is no longer aspirational: `datadog` is a second, real implementation alongside `prometheus_loki`, dispatched via `ObservabilityConfig.provider` (`kubemend/tools/observability/factory.py`) — neither the tool layer nor the loop learned anything Datadog-specific to support it. A third, `grafana_cloud`, needed no new provider class at all: Grafana Cloud's hosted Mimir/Loki are wire-compatible with the same Prometheus/Loki HTTP APIs, so it reuses `PrometheusProvider`/`LokiProvider` with Basic Auth added to the client.
+Observability providers implement one interface so the module is swappable later (Dynatrace/CloudWatch as future drop-ins). As of M9 this is no longer aspirational: `datadog` is a second, real implementation alongside `prometheus_loki`, dispatched via `ObservabilityConfig.provider` (`kubemend/tools/observability/factory.py`) — neither the tool layer nor the loop learned anything Datadog-specific to support it. A third, `grafana_cloud`, needed no new provider class at all: Grafana Cloud's hosted Mimir/Loki are wire-compatible with the same Prometheus/Loki HTTP APIs, so it reuses `PrometheusProvider`/`LokiProvider` with Basic Auth added to the client. M13 adds the third pillar behind the same seam: `TempoProvider` (Grafana Cloud, TraceQL) and `DatadogProvider.query_traces` (APM span search), both producing the same provider-neutral `TraceResult`.
 
 ```python
-class ObservabilityProvider(Protocol):
+class ObservabilityProvider(Protocol):        # metrics + logs: every backend has both
     def query_metrics(self, q: MetricQuery) -> MetricResult: ...
     def search_logs(self, q: LogQuery) -> LogResult: ...
+
+
+class TracesSource(Protocol):                 # M13: separate on purpose
+    def query_traces(self, q: TraceQuery) -> TraceResult: ...
 ```
+
+**Which pillars run is configuration, not provider capability.** `observability.enable`
+(`{metrics, logs, traces}`) decides which tools get registered at all; `provider` decides
+where each one reads from. Metrics and logs default on so every pre-M13 config is unchanged;
+traces default **off**, because plenty of clusters run no tracing and there is no sane
+endpoint to guess. A disabled pillar registers no tool — an always-erroring tool would spend
+the model's iterations discovering a backend that isn't there — and enabling one the provider
+cannot serve fails at wiring time naming both halves.
+
+Tracing sits behind its own `TracesSource` Protocol rather than a third method on
+`ObservabilityProvider` for the same reason it defaults off: metrics and logs exist in every
+backend this project targets and tracing does not, so folding it in would oblige every
+provider to implement a method most of them cannot serve.
 
 ### 3.3 Redaction
 

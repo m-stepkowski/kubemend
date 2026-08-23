@@ -10,13 +10,19 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 import pytest
 
 from kubemend.tools.base import ClientError, TransportError
-from kubemend.tools.observability.datadog import MAX_LIMIT, DatadogProvider
-from kubemend.tools.observability.provider import LogQuery, MetricQuery
+from kubemend.tools.observability.datadog import (
+    MAX_LIMIT,
+    SPANS_PER_TRACE_ESTIMATE,
+    DatadogProvider,
+)
+from kubemend.tools.observability.datadog import traces_tool_spec as datadog_traces_tool_spec
+from kubemend.tools.observability.provider import LogQuery, MetricQuery, TraceQuery
 
 FIXED_NOW = datetime(2026, 8, 12, 12, 0, 0, tzinfo=UTC)
 
@@ -292,3 +298,160 @@ def test_empty_log_result_is_a_hint_not_an_error() -> None:
 
     assert result.streams == []
     assert result.hint is not None
+
+
+# -- traces (M13) ---------------------------------------------------------
+
+
+def _span_event(
+    trace_id: str,
+    resource: str,
+    duration_ns: int,
+    *,
+    parent_id: str | None = None,
+    service: str = "shop-api",
+    tags: list[str] | None = None,
+) -> dict[str, Any]:
+    attributes: dict[str, Any] = {
+        "trace_id": trace_id,
+        "resource_name": resource,
+        "duration": duration_ns,
+        "service": service,
+        "tags": tags or [],
+    }
+    if parent_id is not None:
+        attributes["parent_id"] = parent_id
+    return {"attributes": attributes}
+
+
+def test_flat_spans_are_regrouped_into_traces() -> None:
+    """Datadog returns spans, not traces — unlike Tempo, grouping is this
+    provider's job."""
+    provider = _datadog(
+        lambda _r: httpx.Response(
+            200,
+            json={
+                "data": [
+                    _span_event("t1", "GET /checkout", 900_000_000),
+                    _span_event("t1", "db.query", 700_000_000, parent_id="a"),
+                    _span_event("t2", "GET /cart", 120_000_000),
+                ]
+            },
+        )
+    )
+
+    result = provider.query_traces(TraceQuery(query="service:shop-api", start="-30m", end="now"))
+
+    assert [t.trace_id for t in result.traces] == ["t1", "t2"], "slowest trace first"
+    assert result.traces[0].span_count == 2
+    assert result.traces[0].duration_ms == pytest.approx(900.0)
+
+
+def test_the_parentless_span_names_the_trace_even_when_it_is_not_the_longest() -> None:
+    provider = _datadog(
+        lambda _r: httpx.Response(
+            200,
+            json={
+                "data": [
+                    _span_event("t1", "slow-child", 900_000_000, parent_id="root"),
+                    _span_event("t1", "GET /checkout", 50_000_000),
+                ]
+            },
+        )
+    )
+
+    result = provider.query_traces(TraceQuery(query="", start="-30m", end="now"))
+
+    assert result.traces[0].root_name == "GET /checkout"
+
+
+def test_a_trace_sliced_across_pages_falls_back_to_its_longest_span() -> None:
+    """A page can begin mid-trace, so no parentless span comes back. For "how
+    long did this take" the longest span is the same answer."""
+    provider = _datadog(
+        lambda _r: httpx.Response(
+            200,
+            json={
+                "data": [
+                    _span_event("t1", "child-a", 300_000_000, parent_id="root"),
+                    _span_event("t1", "child-b", 700_000_000, parent_id="root"),
+                ]
+            },
+        )
+    )
+
+    result = provider.query_traces(TraceQuery(query="", start="-30m", end="now"))
+
+    assert result.traces[0].root_name == "child-b"
+    assert result.traces[0].duration_ms == pytest.approx(700.0)
+
+
+def test_min_duration_becomes_a_duration_facet_term_not_a_parameter() -> None:
+    """Datadog has no dedicated min-duration field; it lives in the query."""
+    seen: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"data": []})
+
+    _datadog(handler).query_traces(
+        TraceQuery(query="service:shop-api", start="-30m", end="now", min_duration_ms=250)
+    )
+
+    query = seen[0]["data"]["attributes"]["filter"]["query"]
+    assert "@duration:>250ms" in query
+    assert "service:shop-api" in query
+
+
+def test_the_span_page_over_fetches_because_limit_counts_traces() -> None:
+    seen: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"data": []})
+
+    _datadog(handler).query_traces(TraceQuery(query="", start="-30m", end="now", limit=3))
+
+    assert seen[0]["data"]["attributes"]["page"]["limit"] == 3 * SPANS_PER_TRACE_ESTIMATE
+
+
+def test_more_traces_than_asked_for_sets_limited() -> None:
+    provider = _datadog(
+        lambda _r: httpx.Response(
+            200,
+            json={
+                "data": [_span_event(f"t{i}", f"GET /{i}", (i + 1) * 1_000_000) for i in range(5)]
+            },
+        )
+    )
+
+    result = provider.query_traces(TraceQuery(query="", start="-30m", end="now", limit=2))
+
+    assert len(result.traces) == 2
+    assert result.limited is True
+
+
+def test_no_spans_returns_an_actionable_hint() -> None:
+    provider = _datadog(lambda _r: httpx.Response(200, json={"data": []}))
+
+    result = provider.query_traces(TraceQuery(query="", start="-30m", end="now"))
+
+    assert result.traces == []
+    assert result.hint is not None and "min_duration_ms" in result.hint
+
+
+def test_a_malformed_span_response_is_a_client_error_not_a_crash() -> None:
+    provider = _datadog(lambda _r: httpx.Response(200, json={"data": ["not-an-object"]}))
+
+    with pytest.raises(ClientError, match="malformed span-search"):
+        provider.query_traces(TraceQuery(query="", start="-30m", end="now"))
+
+
+def test_traces_tool_spec_uses_span_query_not_traceql() -> None:
+    """Same tool name as Tempo's so the loop stays backend-agnostic, but a
+    distinct argument name: sending TraceQL to Datadog would silently fail."""
+    spec = datadog_traces_tool_spec(_datadog(lambda _r: httpx.Response(200, json={"data": []})))
+
+    assert spec.name == "query_traces"
+    assert "span_query" in spec.parameters["properties"]
+    assert "traceql" not in spec.parameters["properties"]

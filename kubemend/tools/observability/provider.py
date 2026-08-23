@@ -1,8 +1,15 @@
 """ObservabilityProvider Protocol (ARCHITECTURE.md §3.2).
 
-Two methods — `query_metrics` and `search_logs` — over provider-neutral query
-and result types. This is one of the three seams (with GitBackend and LLMClient)
-where the project grows later without touching kubemend/core.
+`query_metrics` and `search_logs`, plus `query_traces` (M13) behind its own
+`TracesSource` seam, over provider-neutral query and result types. This is one
+of the three seams (with GitBackend and LLMClient) where the project grows
+later without touching kubemend/core.
+
+Traces are a *separate* Protocol rather than a third method on
+`ObservabilityProvider`: metrics and logs exist in every backend this project
+targets, tracing does not, and `observability.enable.traces` defaults off for
+that reason. Folding it into the combined Protocol would oblige every provider
+to implement a method most of them cannot serve.
 
 The types below are deliberately not PromQL/LogQL-shaped beyond the query string
 itself: a Dynatrace or CloudWatch provider should be able to satisfy this
@@ -120,12 +127,67 @@ class LogResult:
     hint: str | None = None
 
 
+@dataclass(frozen=True)
+class TraceQuery:
+    """A trace search, in whatever selector dialect the provider speaks
+    (TraceQL for Tempo, a span-search query for Datadog APM).
+
+    `min_duration_ms` is first-class rather than left to the query string:
+    "show me the slow ones" is the question tracing is actually asked during
+    an incident, and every backend expresses it differently.
+    """
+
+    query: str
+    start: str
+    end: str
+    min_duration_ms: float | None = None
+    limit: int = 20
+
+
+@dataclass(frozen=True)
+class Span:
+    """One span, flattened to what a diagnosis needs.
+
+    Deliberately not a tree: reconstructing parent/child in context costs
+    tokens the model rarely spends well. `depth` preserves the shape that
+    matters — which call sits under which — without the nesting.
+    """
+
+    name: str
+    service: str
+    duration_ms: float
+    depth: int = 0
+    status: str = ""
+    attributes: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Trace:
+    trace_id: str
+    root_name: str
+    duration_ms: float
+    span_count: int
+    start_time: str = ""
+    spans: list[Span] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class TraceResult:
+    traces: list[Trace] = field(default_factory=list)
+    limited: bool = False
+    hint: str | None = None
+
+
 class MetricsSource(Protocol):
     def query_metrics(self, query: MetricQuery) -> MetricResult: ...
 
 
 class LogsSource(Protocol):
     def search_logs(self, query: LogQuery) -> LogResult: ...
+
+
+class TracesSource(Protocol):
+    def query_traces(self, query: TraceQuery) -> TraceResult: ...
 
 
 class ObservabilityProvider(MetricsSource, LogsSource, Protocol):

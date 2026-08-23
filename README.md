@@ -77,9 +77,11 @@ committed baseline.
 
 ## Observability providers
 
-`query_metrics`/`search_logs` are backed by whichever provider
-`observability.provider` selects — only one provider's tool pair is ever
-registered per run. Providers with their own query language change the tool
+`query_metrics`/`search_logs`/`query_traces` are backed by whichever provider
+`observability.provider` selects — only one provider's tools are ever
+registered per run, and `observability.enable` decides which of the three
+pillars get registered at all (metrics and logs on by default, **traces
+off**). Providers with their own query language change the tool
 argument names the model sees (`promql`/`logql` vs `metric_query`/
 `log_query`; see
 [`docs/knowledge/tool-contracts.md`](docs/knowledge/tool-contracts.md));
@@ -88,9 +90,9 @@ Cloud) don't:
 
 | Provider | `observability.provider` | Credentials |
 |---|---|---|
-| Prometheus + Loki | `prometheus_loki` (default) | none beyond network access — the lab's read-only ServiceAccount already covers it |
-| Datadog | `datadog` | `datadog_api_key_file`/`datadog_app_key_file` (default `.lab/datadog-api-key`/`.lab/datadog-app-key`, gitignored — generate a Datadog API key and an application key with log/metric read scope and write them there, one key per file, no trailing newline needed) |
-| Grafana Cloud | `grafana_cloud` | `grafana_cloud_token_file` (default `.lab/grafana-cloud-token`, gitignored — one Grafana Cloud Access Policy token with metrics:read/logs:read scope, no trailing newline needed); `grafana_cloud_prometheus_url`/`_instance_id` and `grafana_cloud_loki_url`/`_instance_id` are account-specific with no default — copy them from your stack's connection-details page |
+| Prometheus + Loki | `prometheus_loki` (default) | none beyond network access — the lab's read-only ServiceAccount already covers it. No traces: enabling `enable.traces` here fails at startup |
+| Datadog | `datadog` | `datadog_api_key_file`/`datadog_app_key_file` (default `.lab/datadog-api-key`/`.lab/datadog-app-key`, gitignored — generate a Datadog API key and an application key with log/metric read scope and write them there, one key per file, no trailing newline needed). Traces (APM span search) need no extra config — the same keys serve all three pillars |
+| Grafana Cloud | `grafana_cloud` | `grafana_cloud_token_file` (default `.lab/grafana-cloud-token`, gitignored — one Grafana Cloud Access Policy token with metrics:read/logs:read scope, no trailing newline needed); `grafana_cloud_prometheus_url`/`_instance_id` and `grafana_cloud_loki_url`/`_instance_id` are account-specific with no default — copy them from your stack's connection-details page. Traces additionally need `grafana_cloud_tempo_url`/`_instance_id` and `traces:read` on the token |
 
 ```yaml
 observability:

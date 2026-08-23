@@ -104,6 +104,50 @@ Executor: POST `/api/v2/logs/events/search` (`filter.query`/`from`/`to` RFC3339,
 
 Schema and executor are byte-identical to `search_logs — prometheus_loki` — this *is* `LokiProvider`, pointed at Grafana Cloud's hosted Loki instead of a self-hosted instance. Only the transport differs: HTTP Basic Auth (`grafana_cloud_loki_instance_id` as username, the same shared Access Policy token as password used for metrics), invisible to the model.
 
+## query_traces — grafana_cloud  (tier: read, timeout 30s)
+
+```json
+{"name": "query_traces",
+ "description": "Search distributed traces with TraceQL, e.g. {resource.service.name=\"shop-api\"} or {status=error}. Use this to find which downstream call is slow or failing when metrics show latency but logs do not say why. Spans come back slowest-first, not as a tree. min_duration_ms is the usual way to find the pathological requests.",
+ "input_schema": {"type": "object", "properties": {
+   "traceql":         {"type": "string"},
+   "start":           {"type": "string"}, "end": {"type": "string"},
+   "min_duration_ms": {"type": "number"},
+   "limit":           {"type": "integer", "maximum": 20, "default": 10}},
+  "required": ["traceql", "start", "end"]}}
+```
+
+Executor: `TempoProvider`. TraceQL against `/api/search`, then one `/api/traces/<id>` fetch per hit — Tempo's search returns trace *metadata* only, never spans, which is why `limit` caps at 20 rather than the 500 the log tools allow: each result costs its own round trip inside one tool-call timeout. Transport is HTTP Basic Auth (`grafana_cloud_tempo_instance_id` as username, the same shared Access Policy token used for metrics and logs), invisible to the model. Payload `{traces: [{trace_id, root_name, duration_ms, span_count, spans: [{name, service, duration_ms, status, attributes}]}], limited, hint?}`.
+
+Spans are **flat and slowest-first, not a tree**: reconstructing parent/child in context costs tokens the model rarely spends well, and "what took the time" is the question tracing answers during an incident. Capped at 40 spans per trace. A trace whose span fetch fails degrades to metadata only rather than failing the whole call — one unreadable trace must not cost the other nineteen. Span names and attributes pass `redact_text` in the provider as well as the executor (I3), same defence in depth `search_logs` applies.
+
+## query_traces — datadog  (tier: read, timeout 30s)
+
+```json
+{"name": "query_traces",
+ "description": "Search APM spans in Datadog, e.g. service:shop-api or service:shop-api status:error. Use this to find which downstream call is slow or failing when metrics show latency but logs do not say why. Results are grouped into traces, slowest first, with spans slowest-first inside each. min_duration_ms is the usual way to find the pathological requests.",
+ "input_schema": {"type": "object", "properties": {
+   "span_query":      {"type": "string"},
+   "start":           {"type": "string"}, "end": {"type": "string"},
+   "min_duration_ms": {"type": "number"},
+   "limit":           {"type": "integer", "maximum": 500, "default": 10}},
+  "required": ["span_query", "start", "end"]}}
+```
+
+Executor: `DatadogProvider`, `POST /api/v2/spans/events/search`. Same tool *name* and same payload shape as the Tempo flavour, so the loop and the trace format never learn which backend answered — but the query argument is `span_query`, not `traceql`, because the dialects are genuinely different and a shared name would invite the model to send TraceQL to Datadog. Same reasoning as `metric_query`/`log_query` vs `promql`/`logql`.
+
+Two shaping differences follow from Datadog returning a flat span list rather than trace metadata:
+
+- **Grouping is the provider's job.** Spans are grouped by `trace_id`; the parentless span decides the trace's name and duration, falling back to the longest span when a page slices a trace mid-way (for "how long did this take" the two agree).
+- **`limit` means traces to the caller, spans to the API.** The request over-fetches `limit × 20` spans (capped at 500), groups, then keeps `limit` traces. `min_duration_ms` likewise has no dedicated field — it is appended to the query as a `@duration:>Nms` facet term.
+
+**Partially validated against live accounts (2026-08-23) — transport yes, span shaping no.**
+
+- **Tempo**: `/api/search` confirmed against real Grafana Cloud — Basic Auth accepted, params accepted, HTTP 200, and the response's top-level `traces` key is what the provider reads. The `/api/traces/<id>` fetch and the OTLP `batches`/`scopeSpans`/`attributes` parsing are **unproven**: the instance holds no traces.
+- **Datadog**: auth and endpoint path confirmed (a semantic 400, not 401/403/404), and the 400 ⇒ `ClientError`-never-retried classification confirmed against the live API. The search itself returns `"No valid indexes specified"` for every body variant tried, including explicit `filter.indexes: ["*"]`; `/api/v1/apm/services` 404s. Consistent with an org that has never enabled APM, but indistinguishable from a malformed body from outside. Response parsing **unproven**.
+
+The attribute names (`resource_name`, `parent_id`, `duration` in nanoseconds) and the `@duration` facet syntax are exactly what only survives contact with real span data. See `IMPLEMENTATION_PLAN.md` M13 — its acceptance criterion (one provider fully live-validated) is **not yet met**.
+
 ## get_k8s_state  (tier: read, timeout 15s)
 
 ```json
