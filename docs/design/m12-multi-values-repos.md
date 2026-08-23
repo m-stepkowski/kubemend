@@ -1,9 +1,13 @@
 # M12 — Multi-repo GitOps, phase B: multiple values repos
 
-Status: **design, not yet implemented**. Written 2026-08-23, after M11 shipped
+Status: **partially implemented**. Written 2026-08-23, after M11 shipped
 (v0.8.0). Companion to `docs/design/m11-multi-repo-gitops.md`, which this doc
 assumes you have read — it defines split mode, `ChartRoute`, `ReaderRoute`, and
 the wiring seams M12 extends.
+
+Done: config + routing (§3-4), write-path wiring (§6), per-repo layout
+(§9 q2), token liveness (§8). Outstanding: lab fixtures and the acceptance
+scenario (§10), chart/docs (§11), and §7's reason-string refinement.
 
 Scope per `IMPLEMENTATION_PLAN.md` M12: route the *values* repo per app, not
 just the chart repo. Plus one unrelated item bundled in by the plan: lab token
@@ -227,30 +231,57 @@ else
 fi
 ```
 
-Same shape for argocd (`argocd account get-user-info` with the stored token).
 Note this is *validation*, not a retry loop — CLAUDE.md's no-retries-for-flakes
 rule is about masking nondeterminism; checking whether a credential works before
 trusting it is the opposite of masking.
 
+**Implemented 2026-08-23, and the endpoint choice turned out to be the whole
+problem.** Both obvious probes are wrong, each in a different direction, and
+both were caught only by feeding them a deliberately-garbage token — never by
+reading the docs:
+
+- `argocd account get-user-info --auth-token <garbage>` **exits 0** and prints
+  `Logged In: false`. As a liveness check it validates nothing and would have
+  shipped as a no-op. Use `argocd app list`, which genuinely round-trips the
+  credential and exercises the same read the gate's diff stage needs.
+- Gitea's `/api/v1/user` returns **403 for a perfectly valid token**, because
+  the agent's token is minted with scopes `["write:repository"]` and has no
+  user scope. As a liveness check it fails always, regenerating a fresh token
+  on every single run. Use `/api/v1/repos/kubemend/gitops` — 200 for a valid
+  token, 401 for a stale one, and within the scope the token actually holds.
+
+Generalizable rule for any future credential check here: **probe the permission
+the credential is actually for, and verify the probe against a known-bad
+credential before trusting it.** A check that cannot fail is worse than no
+check, because it looks like coverage.
+
+One further detail: gitea rejects creating a token whose name duplicates an
+existing one, and the superseded token is still there after a rotation — so the
+regeneration path mints `kubemend-agent-<epoch>`, not a fixed name.
+
 ## 9. Open questions (resolve before or during implementation)
 
-1. **Forge coordinates: explicit or parsed?** `ValuesRepoSpec` above requires
-   `gitea_owner`/`gitea_repo` per repo. Parsing them off `url` would remove two
-   fields per repo and one class of copy-paste error, at the cost of a URL
-   parser that has to handle SSH and HTTPS forms and will eventually meet a URL
-   it mis-parses. **Recommendation: explicit, with parsing as a possible later
-   convenience** — an unparsed URL fails loudly at wiring time, a mis-parsed one
-   opens a PR against the wrong repo.
-2. **The `apps/<app>/values.yaml` hardcode** in split-mode render (§6). Options:
-   (a) derive it from the route's `writable_globs`; (b) add an explicit
-   `values_path_template` per repo; (c) leave it and document the constraint that
-   split mode requires the `apps/<app>/` layout. Needs a look at what the glob
-   actually constrains before choosing — **(b) is the likely answer** since a
-   glob describes a *set* and render needs exactly one file, but confirm against
-   the real code path rather than deciding here.
-3. **Does `default` earn its keep?** It is one more resolution branch. If the
-   realistic config always enumerates apps, drop it. Keep for now; delete during
-   implementation if the acceptance scenario never exercises it.
+1. **Forge coordinates: explicit or parsed?** — **RESOLVED: explicit.** Shipped
+   as `gitea_owner`/`gitea_repo` on `ValuesRepoSpec`, no URL parsing. One
+   addition found while wiring: when `backend: gitea` and a routed repo has no
+   coordinates, `build_write_path` now **fails at wiring time** rather than
+   falling back to the top-level `gitops.gitea_owner`/`gitea_repo`. The fallback
+   was the dangerous option — it would open the PR against a real repo, the
+   wrong one, which is precisely what per-repo coordinates exist to prevent.
+2. **The `apps/<app>/values.yaml` hardcode** — **RESOLVED, and the design
+   understated it.** The hardcode was in *two* places, not one: split-mode
+   render's `--values` flag, and `_chart_dir`'s single-repo branch
+   (`repo_path / "apps" / app`), which this doc never mentioned. Option (a)
+   (derive from `writable_globs`) is definitively wrong for the reason
+   sketched — a glob describes a set, render needs exactly one file — so
+   shipped as (b), but as `app_dir_template` (default `"apps/{app}"`) rather
+   than a values-only path: in single-repo mode that one directory holds the
+   chart *and* its values, so a single template governs both call sites and
+   the two cannot drift apart. Rejects a template lacking `{app}` at config
+   load: without the placeholder every app resolves to one directory and the
+   validator would render one app against another's values, silently.
+3. **Does `default` earn its keep?** Still open — decide once the acceptance
+   scenario (§10) exists and shows whether it exercises the branch.
 4. **Interaction with M11's `chart_repos.url_template`** when both sections are
    configured: no technical conflict (different tables, different keys), but the
    combined config is the first one a reader has to hold two routing models in
