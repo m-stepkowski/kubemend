@@ -14,6 +14,7 @@ import pytest
 
 from kubemend.tools.gitops.reader import (
     GitOpsReader,
+    ReaderRoute,
     list_gitops_files_spec,
     read_gitops_file_spec,
 )
@@ -125,8 +126,8 @@ def test_oversized_file_is_truncated_rather_than_flooding_context(repo: Path) ->
 
 def test_tool_specs_are_read_tier_and_side_effect_free(repo: Path) -> None:
     """A write-capable read tool would breach the single-write-path invariant."""
-    reader = GitOpsReader(repo)
-    specs = [read_gitops_file_spec(reader), list_gitops_files_spec(reader)]
+    readers = {"values": ReaderRoute(GitOpsReader(repo))}
+    specs = [read_gitops_file_spec(readers), list_gitops_files_spec(readers)]
 
     assert [s.tier for s in specs] == ["read", "read"]
 
@@ -138,6 +139,67 @@ def test_tool_specs_are_read_tier_and_side_effect_free(repo: Path) -> None:
 
 def test_executor_tolerates_a_missing_argument(repo: Path) -> None:
     """The model omits required fields; that must not raise into the loop."""
-    result = read_gitops_file_spec(GitOpsReader(repo)).executor({})
+    readers = {"values": ReaderRoute(GitOpsReader(repo))}
+    result = read_gitops_file_spec(readers).executor({})
 
     assert "error" in result
+
+
+def test_repo_defaults_to_values_so_existing_calls_are_unaffected(repo: Path) -> None:
+    readers = {"values": ReaderRoute(GitOpsReader(repo))}
+
+    result = read_gitops_file_spec(readers).executor({"path": "apps/shop-api/values.yaml"})
+
+    assert "content" in result
+
+
+def test_chart_repo_reads_are_rooted_at_the_configured_chart_path(tmp_path: Path) -> None:
+    """Split mode: the chart checkout's repo root isn't the chart root — a
+    `chart_path` subdirectory prefix translates the model's chart-relative
+    path into the checkout-relative one `git show` actually needs."""
+    from git import Repo
+
+    chart_checkout = tmp_path / "chart-checkout"
+    (chart_checkout / "chart" / "templates").mkdir(parents=True)
+    (chart_checkout / "chart" / "Chart.yaml").write_text("name: shop-api\n")
+    git_repo = Repo.init(chart_checkout, initial_branch="main")
+    git_repo.index.add(["chart/Chart.yaml"])
+    git_repo.index.commit("seed")
+
+    readers = {"chart": ReaderRoute(GitOpsReader(chart_checkout), prefix="chart")}
+
+    result = read_gitops_file_spec(readers).executor({"path": "Chart.yaml", "repo": "chart"})
+
+    assert result["path"] == "Chart.yaml", "echoes what the model asked for, not the prefixed path"
+    assert "name: shop-api" in result["content"]
+
+
+def test_chart_repo_listing_strips_the_prefix_back_off(tmp_path: Path) -> None:
+    from git import Repo
+
+    chart_checkout = tmp_path / "chart-checkout"
+    (chart_checkout / "chart" / "templates").mkdir(parents=True)
+    (chart_checkout / "chart" / "templates" / "deployment.yaml").write_text("kind: Deployment\n")
+    git_repo = Repo.init(chart_checkout, initial_branch="main")
+    git_repo.index.add(["chart/templates/deployment.yaml"])
+    git_repo.index.commit("seed")
+
+    readers = {"chart": ReaderRoute(GitOpsReader(chart_checkout), prefix="chart")}
+
+    result = list_gitops_files_spec(readers).executor({"pattern": "**/*", "repo": "chart"})
+
+    assert result["paths"] == ["templates/deployment.yaml"]
+
+
+def test_chart_repo_in_single_repo_mode_returns_a_structured_client_error(repo: Path) -> None:
+    """No "chart" key in the mapping at all — today's default wiring — is
+    what single-repo mode looks like; the model must get a clear correction,
+    not a KeyError into the loop."""
+    readers = {"values": ReaderRoute(GitOpsReader(repo))}
+
+    result = read_gitops_file_spec(readers).executor(
+        {"path": "templates/deployment.yaml", "repo": "chart"}
+    )
+
+    assert result["error"]["type"] == "client_error"
+    assert "single-repo setup" in result["error"]["message"]

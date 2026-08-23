@@ -22,6 +22,7 @@ values the chart actually consumes, and reading them changes nothing.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
@@ -32,6 +33,16 @@ from git import GitCommandError, Repo
 from kubemend.tools.base import ToolSpec
 
 MAX_BYTES = 64_000
+
+NO_CHART_ROUTE = {
+    "error": {
+        "type": "client_error",
+        "message": (
+            "this is a single-repo setup; chart templates live in the same repo — "
+            "read them with the default repo"
+        ),
+    }
+}
 
 
 @dataclass
@@ -97,9 +108,47 @@ def _matches(path: str, pattern: str) -> bool:
     return fnmatch(path, pattern) or fnmatch(path, pattern.replace("**/", "*"))
 
 
-def read_gitops_file_spec(reader: GitOpsReader) -> ToolSpec:
+@dataclass(frozen=True)
+class ReaderRoute:
+    """One `repo` value's reader plus the path prefix reads are rooted at
+    (M11 design doc §4). Empty for the values repo — nothing about its reads
+    changes. In split mode, `"chart"` carries the app's `chart_path`: the
+    model asks for `templates/deployment.yaml`, unaware the chart repo might
+    keep its chart in a subdirectory, and the prefix makes that translation.
+    """
+
+    reader: GitOpsReader
+    prefix: str = ""
+
+    def _prefixed(self, rel: str) -> str:
+        if self.prefix in ("", "."):
+            return rel
+        return f"{self.prefix.rstrip('/')}/{rel}" if rel else self.prefix
+
+    def read(self, rel: str) -> dict[str, Any]:
+        result = self.reader.read(self._prefixed(rel))
+        if "path" in result:
+            result["path"] = rel  # echo what the model asked for, not the internal prefix
+        return result
+
+    def list(self, pattern: str) -> dict[str, Any]:
+        prefix = "" if self.prefix in ("", ".") else self.prefix.rstrip("/") + "/"
+        result = self.reader.list(prefix + pattern if prefix else pattern)
+        if "error" in result:
+            return result
+        paths = [
+            p[len(prefix) :] if prefix and p.startswith(prefix) else p for p in result["paths"]
+        ]
+        return {"pattern": pattern, "paths": paths}
+
+
+def read_gitops_file_spec(readers: Mapping[str, ReaderRoute]) -> ToolSpec:
     def _execute(args: dict[str, Any]) -> dict[str, Any]:
-        return reader.read(str(args.get("path", "")))
+        repo = str(args.get("repo", "values"))
+        route = readers.get(repo)
+        if route is None:
+            return NO_CHART_ROUTE
+        return route.read(str(args.get("path", "")))
 
     return ToolSpec(
         name="read_gitops_file",
@@ -109,7 +158,8 @@ def read_gitops_file_spec(reader: GitOpsReader) -> ToolSpec:
             "current file with your edit applied, rather than a reconstruction — "
             "propose_git_change replaces the whole file, so anything you omit is deleted. "
             "Chart templates and Chart.yaml are readable too, which is how you tell which "
-            "values a chart requires."
+            'values a chart requires — pass repo: "chart" if this app\'s chart lives in a '
+            "separate repo from its values."
         ),
         parameters={
             "type": "object",
@@ -117,7 +167,17 @@ def read_gitops_file_spec(reader: GitOpsReader) -> ToolSpec:
                 "path": {
                     "type": "string",
                     "description": "Repo-relative path, e.g. apps/shop-api/values.yaml",
-                }
+                },
+                "repo": {
+                    "type": "string",
+                    "enum": ["values", "chart"],
+                    "default": "values",
+                    "description": (
+                        'Which repo to read from. "chart" reads this app\'s chart '
+                        "templates/Chart.yaml when they live in a separate repo from the "
+                        "values; if they don't, this returns an error explaining so."
+                    ),
+                },
             },
             "required": ["path"],
         },
@@ -127,15 +187,20 @@ def read_gitops_file_spec(reader: GitOpsReader) -> ToolSpec:
     )
 
 
-def list_gitops_files_spec(reader: GitOpsReader) -> ToolSpec:
+def list_gitops_files_spec(readers: Mapping[str, ReaderRoute]) -> ToolSpec:
     def _execute(args: dict[str, Any]) -> dict[str, Any]:
-        return reader.list(str(args.get("pattern", "**/*")))
+        repo = str(args.get("repo", "values"))
+        route = readers.get(repo)
+        if route is None:
+            return NO_CHART_ROUTE
+        return route.list(str(args.get("pattern", "**/*")))
 
     return ToolSpec(
         name="list_gitops_files",
         description=(
             "List files in the GitOps repository matching a glob, e.g. 'apps/shop-api/**/*' "
-            "to see a chart's layout before reading its templates."
+            'to see a chart\'s layout before reading its templates. Pass repo: "chart" if '
+            "this app's chart lives in a separate repo from its values."
         ),
         parameters={
             "type": "object",
@@ -143,7 +208,17 @@ def list_gitops_files_spec(reader: GitOpsReader) -> ToolSpec:
                 "pattern": {
                     "type": "string",
                     "description": "Glob relative to the repository root; defaults to **/*",
-                }
+                },
+                "repo": {
+                    "type": "string",
+                    "enum": ["values", "chart"],
+                    "default": "values",
+                    "description": (
+                        "Which repo to list. \"chart\" lists this app's chart repo when it's "
+                        "separate from the values; if it isn't, this returns an error "
+                        "explaining so."
+                    ),
+                },
             },
             "required": [],
         },

@@ -30,6 +30,7 @@ from kubemend.tools.gitops.local_backend import LocalGitBackend
 from kubemend.tools.gitops.proposer import Proposer, propose_tool_spec
 from kubemend.tools.gitops.reader import (
     GitOpsReader,
+    ReaderRoute,
     list_gitops_files_spec,
     read_gitops_file_spec,
 )
@@ -193,8 +194,11 @@ def execute_incident(
             Path(cfg.gitops.repo_path).expanduser().resolve(),
             base_branch=cfg.gitops.base_branch,
         )
-        registry.register(read_gitops_file_spec(reader))
-        registry.register(list_gitops_files_spec(reader))
+        # Split-mode chart routing (M11) lands in Phase 4; today's single-repo
+        # mode is just the values reader under the default "values" key.
+        readers: dict[str, ReaderRoute] = {"values": ReaderRoute(reader)}
+        registry.register(read_gitops_file_spec(readers))
+        registry.register(list_gitops_files_spec(readers))
         registry.register(propose_tool_spec(proposer))
         registry.register(validate_tool_spec(gate))
 

@@ -131,9 +131,10 @@ Neither is the security boundary. The ServiceAccount in `lab/bootstrap/rbac.yaml
 
 ```json
 {"name": "read_gitops_file",
- "description": "Read one file from the GitOps repository as it currently stands on the base branch. Use this before propose_git_change so the contents you submit are the current file with your edit applied, rather than a reconstruction — propose_git_change replaces the whole file, so anything you omit is deleted. Chart templates and Chart.yaml are readable too, which is how you tell which values a chart requires.",
+ "description": "Read one file from the GitOps repository as it currently stands on the base branch. Use this before propose_git_change so the contents you submit are the current file with your edit applied, rather than a reconstruction — propose_git_change replaces the whole file, so anything you omit is deleted. Chart templates and Chart.yaml are readable too, which is how you tell which values a chart requires — pass repo: \"chart\" if this app's chart lives in a separate repo from its values.",
  "input_schema": {"type": "object", "properties": {
-   "path": {"type": "string", "description": "Repo-relative path, e.g. apps/shop-api/values.yaml"}},
+   "path": {"type": "string", "description": "Repo-relative path, e.g. apps/shop-api/values.yaml"},
+   "repo": {"type": "string", "enum": ["values", "chart"], "default": "values", "description": "Which repo to read from. \"chart\" reads this app's chart templates/Chart.yaml when they live in a separate repo from the values; if they don't, this returns an error explaining so."}},
   "required": ["path"]}}
 ```
 
@@ -152,15 +153,34 @@ Registered only when the write path is (`--read-only` runs omit both): with no
 proposer there is nothing to write and no reason to spend context on chart
 internals.
 
+**`repo` (M11, split mode only):** in today's default single-repo mode,
+`repo: "chart"` returns `{"error": {"type": "client_error", "message": "this
+is a single-repo setup; chart templates live in the same repo — read them
+with the default repo"}}` rather than a `KeyError` into the loop — there is no
+"chart" route to serve. In split mode, `"chart"` reads from a second checkout
+(the app's own chart repo, resolved once at wiring time per
+`docs/design/m11-multi-repo-gitops.md` §3) rooted at that route's
+`chart_path`: the model's `path` argument is always chart-relative (e.g.
+`templates/deployment.yaml`) regardless of where the chart actually sits
+inside its repo — the executor prefixes and strips `chart_path`
+transparently, and the payload's `path` always echoes back what the model
+asked for. `repo` defaults to `"values"`, so every existing prompt, scenario,
+and trace replay is unaffected by this parameter's addition.
+
 ## list_gitops_files  (tier: read, timeout 10s)
 
 ```json
 {"name": "list_gitops_files",
- "description": "List files in the GitOps repository matching a glob, e.g. 'apps/shop-api/**/*' to see a chart's layout before reading its templates.",
+ "description": "List files in the GitOps repository matching a glob, e.g. 'apps/shop-api/**/*' to see a chart's layout before reading its templates. Pass repo: \"chart\" if this app's chart lives in a separate repo from its values.",
  "input_schema": {"type": "object", "properties": {
-   "pattern": {"type": "string", "description": "Glob relative to the repository root; defaults to **/*"}},
+   "pattern": {"type": "string", "description": "Glob relative to the repository root; defaults to **/*"},
+   "repo": {"type": "string", "enum": ["values", "chart"], "default": "values", "description": "Which repo to list. \"chart\" lists this app's chart repo when it's separate from the values; if it isn't, this returns an error explaining so."}},
   "required": []}}
 ```
+
+Same `repo` behavior as `read_gitops_file` above — single contract for both
+tools, not two variants. Listing in split mode narrows to the chart route's
+`chart_path` and strips it back off the returned paths, the same way reads do.
 
 Executor: globs from the repository root, filters to files, excludes `.git/**`.
 Payload `{pattern, paths}`, all paths repo-relative.
