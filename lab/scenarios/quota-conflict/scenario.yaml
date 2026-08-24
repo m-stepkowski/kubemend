@@ -7,5 +7,10 @@ expected_outcome: pr
 symptom_probe:
   kind: event_reason
   value: FailedCreate
-  timeout_s: 60
+  # 120s, not the 60s this carried before M14: that budget was only ever
+  # sufficient because the probe matched FailedCreate events left by earlier
+  # iterations and returned instantly. Waiting honestly means Argo has to sync
+  # the break, the ReplicaSet has to attempt creation, and the quota has to
+  # reject it — one step more than the pod-state probes that use 90s.
+  timeout_s: 120
 tags: [quota, scheduling]

@@ -74,3 +74,55 @@ def test_loop_skips_execution_of_the_repeated_call_and_aborts(
     assert result.success is False
     assert len(attempts) == 1, "the repeated calls must not be executed again"
     assert result.handoff is not None, "an aborted run still hands off what it learned"
+
+
+def test_rewording_the_rationale_does_not_disguise_an_identical_proposal() -> None:
+    """Regression from the M14 re-baseline.
+
+    A run proposed byte-identical file content nine times, varying only its
+    `rationale`, and spun until its iteration budget died — the detector never
+    fired because the signature hashed the prose too. No adversarial intent
+    needed; models vary their wording naturally.
+    """
+    detector = LoopDetector()
+    files = {"apps/shop-api/values.yaml": "replicaCount: 3\n"}
+
+    first = detector.observe(
+        ToolCall(
+            id="1", name="propose_git_change", arguments={"files": files, "rationale": "quota"}
+        )
+    )
+    second = detector.observe(
+        ToolCall(
+            id="2",
+            name="propose_git_change",
+            arguments={"files": files, "rationale": "the namespace pod quota limits pods to 4"},
+        )
+    )
+
+    assert first is None
+    assert second is not None, "same files, different prose, is still a repeat"
+
+
+def test_a_genuinely_different_proposal_still_resets_the_streak() -> None:
+    """The opposite error would be worse: treating a corrected proposal as a
+    repeat would abort runs that are converging."""
+    detector = LoopDetector()
+
+    detector.observe(
+        ToolCall(
+            id="1",
+            name="propose_git_change",
+            arguments={"files": {"v.yaml": "replicaCount: 4\n"}, "rationale": "same words"},
+        )
+    )
+    nudge = detector.observe(
+        ToolCall(
+            id="2",
+            name="propose_git_change",
+            arguments={"files": {"v.yaml": "replicaCount: 3\n"}, "rationale": "same words"},
+        )
+    )
+
+    assert nudge is None
+    assert detector.should_abort() is False

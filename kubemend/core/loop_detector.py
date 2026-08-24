@@ -22,9 +22,29 @@ NUDGE = (
 )
 
 
+# Free-text arguments that explain a call without changing what it does.
+# Excluded from the signature because a model re-wording its reasoning is not
+# a different action — and including them made the detector trivially
+# defeatable: in the M14 re-baseline a run proposed byte-identical file
+# content nine times running, varying only `rationale`, and spun until its
+# iteration budget died without the detector ever firing
+# (evals/reports/cheap-baseline/diagnosis.md).
+#
+# Name-based rather than declared per-tool on ToolSpec: the rule is general,
+# and threading a per-tool mapping would mean widening `run_loop`'s signature
+# for it. If a tool ever needs prose to be identity-bearing, that is the
+# moment to move this onto ToolSpec, not before.
+NON_IDENTITY_ARGS = frozenset({"rationale", "incident_ref"})
+
+
 def signature(call: ToolCall) -> tuple[str, str]:
-    """Canonical JSON keeps key order from disguising a repeat."""
-    return call.name, json.dumps(call.arguments, sort_keys=True, separators=(",", ":"))
+    """Canonical JSON keeps key order from disguising a repeat.
+
+    Prose arguments are dropped first, so the signature reflects what the call
+    *does* rather than how the model narrated it.
+    """
+    effectful = {k: v for k, v in call.arguments.items() if k not in NON_IDENTITY_ARGS}
+    return call.name, json.dumps(effectful, sort_keys=True, separators=(",", ":"))
 
 
 @dataclass
