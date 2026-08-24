@@ -420,7 +420,9 @@ class FakeKube:
         quotas: list[dict[str, object]] | None = None,
         live_replicas: int | None = 2,
         live_spec_replicas: int | None = None,
+        siblings: list[dict[str, object]] | None = None,
     ) -> None:
+        self.siblings = siblings or []
         self.quotas = quotas or []
         self.live_replicas = live_replicas
         # Only set for the spec-vs-status regression test: a Deployment whose
@@ -435,7 +437,11 @@ class FakeKube:
         self, kind: str, namespace: str, selector: str | None = None
     ) -> list[dict[str, object]]:
         self.list_resource_calls.append((kind, namespace))
-        return self.quotas if kind == "resourcequota" else []
+        if kind == "resourcequota":
+            return self.quotas
+        if kind == "deployment":
+            return self.siblings
+        return []
 
     def get_resource(self, kind: str, namespace: str, name: str) -> dict[str, object]:
         self.get_resource_calls.append((kind, namespace, name))
@@ -852,3 +858,71 @@ def test_an_infra_flagged_detail_still_redacts_the_token(tmp_path: Path) -> None
     diff = next(c for c in verdict.checks if c.name == "diff")
     assert diff.infra_error is True
     assert "jwt-token" not in diff.detail
+
+
+def test_a_starved_co_tenant_does_not_make_an_over_quota_proposal_look_like_it_fits(
+    tmp_path: Path,
+) -> None:
+    """The M14 baseline's quota bug, in one test.
+
+    Broken shop-api won the race for every pod slot, so shop-worker sat at
+    zero live pods. `used_pods - own_replicas` then read 0, and replicaCount=4
+    against hard.pods=4 was judged to fit — approving a change that re-starves
+    shop-worker the moment it recovers. Headroom now also accounts for what
+    the namespace's other workloads *intend* to run.
+    """
+    kube = FakeKube(
+        quotas=[
+            {
+                "metadata": {"name": "shop-api-pods"},
+                "spec": {"hard": {"pods": "4"}},
+                # Every slot taken by shop-api itself: the starved state.
+                "status": {"used": {"pods": "4"}},
+            }
+        ],
+        live_replicas=4,
+        siblings=[{"metadata": {"name": "shop-worker"}, "spec": {"replicas": 1}}],
+    )
+    validator = _validator(_rendering_runner(), tmp_path)
+    validator = replace(validator, kube=kube)
+
+    failure = validator._quota_headroom("shop", "shop-api", 4)
+
+    assert failure is not None, "4 replicas cannot fit alongside shop-worker under hard.pods=4"
+    assert "shop-worker" not in failure.detail or "already use" in failure.detail
+
+
+def test_headroom_still_allows_a_proposal_that_genuinely_fits(tmp_path: Path) -> None:
+    kube = FakeKube(
+        quotas=[
+            {
+                "metadata": {"name": "shop-api-pods"},
+                "spec": {"hard": {"pods": "4"}},
+                "status": {"used": {"pods": "4"}},
+            }
+        ],
+        live_replicas=4,
+        siblings=[{"metadata": {"name": "shop-worker"}, "spec": {"replicas": 1}}],
+    )
+    validator = replace(_validator(_rendering_runner(), tmp_path), kube=kube)
+
+    assert validator._quota_headroom("shop", "shop-api", 3) is None
+
+
+def test_the_app_being_changed_is_never_counted_as_its_own_neighbour(tmp_path: Path) -> None:
+    """Double-counting shop-api's own desired replicas would reject fixes that
+    genuinely fit — the opposite failure, and just as bad."""
+    kube = FakeKube(
+        quotas=[
+            {
+                "metadata": {"name": "shop-api-pods"},
+                "spec": {"hard": {"pods": "4"}},
+                "status": {"used": {"pods": "2"}},
+            }
+        ],
+        live_replicas=2,
+        siblings=[{"metadata": {"name": "shop-api"}, "spec": {"replicas": 6}}],
+    )
+    validator = replace(_validator(_rendering_runner(), tmp_path), kube=kube)
+
+    assert validator._quota_headroom("shop", "shop-api", 4) is None

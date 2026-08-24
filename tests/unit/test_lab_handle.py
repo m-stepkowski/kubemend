@@ -9,6 +9,7 @@ either (a fake clock/sleep drives wait_for_symptom).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -340,9 +341,23 @@ def test_pod_condition_matches(remote_and_clone: tuple[Path, Path]) -> None:
     lab.wait_for_symptom(probe, SCOPE)
 
 
+# Kubernetes keeps events ~1h, far longer than one sweep iteration, so these
+# two tests pin the boundary the M14 baseline diagnosis found broken.
+WAIT_STARTED_AT = datetime(2026, 8, 24, 12, 0, tzinfo=UTC)
+
+
+def _event(reason: str, *, age_seconds: float) -> dict[str, object]:
+    when = WAIT_STARTED_AT + timedelta(seconds=-age_seconds)
+    return {
+        "reason": reason,
+        "message": "exceeded quota",
+        "lastTimestamp": when.isoformat().replace("+00:00", "Z"),
+    }
+
+
 def test_event_reason_matches_substring(remote_and_clone: tuple[Path, Path]) -> None:
     _bare, clone_path = remote_and_clone
-    events = [{"reason": "FailedCreate", "message": "exceeded quota"}]
+    events = [_event("FailedCreate", age_seconds=-1)]  # one second *after* the wait began
     clock = FakeClock()
     lab = LabHandle(
         workspace=clone_path,
@@ -351,10 +366,35 @@ def test_event_reason_matches_substring(remote_and_clone: tuple[Path, Path]) -> 
         loki=FakeLoki(),
         clock=clock.clock,
         sleep=clock.sleep,
+        wall_clock=lambda: WAIT_STARTED_AT,
     )
     probe = SymptomProbe(kind="event_reason", value="FailedCreate", timeout_s=10)
 
     lab.wait_for_symptom(probe, SCOPE)
+
+
+def test_an_event_from_a_previous_iteration_does_not_satisfy_the_probe(
+    remote_and_clone: tuple[Path, Path],
+) -> None:
+    """The M14 baseline's biggest fixture bug: with the lab reset and healthy,
+    a leftover FailedCreate still satisfied this probe, so every iteration
+    after the first started before Argo had applied its break."""
+    _bare, clone_path = remote_and_clone
+    events = [_event("FailedCreate", age_seconds=600)]  # ten minutes stale
+    clock = FakeClock()
+    lab = LabHandle(
+        workspace=clone_path,
+        base_branch="main",
+        kube=FakeKube(events=events),
+        loki=FakeLoki(),
+        clock=clock.clock,
+        sleep=clock.sleep,
+        wall_clock=lambda: WAIT_STARTED_AT,
+    )
+    probe = SymptomProbe(kind="event_reason", value="FailedCreate", timeout_s=10)
+
+    with pytest.raises(SymptomTimeout, match="older ignored"):
+        lab.wait_for_symptom(probe, SCOPE)
 
 
 def test_log_contains_matches_a_substring(remote_and_clone: tuple[Path, Path]) -> None:

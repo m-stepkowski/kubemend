@@ -17,6 +17,7 @@ from __future__ import annotations
 import subprocess
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -87,6 +88,27 @@ class Lab(Protocol):
     def read_file(self, rel_path: str) -> str: ...
 
 
+def _event_at(event: dict[str, Any]) -> datetime | None:
+    """When an event last happened, across the two API shapes.
+
+    Core v1 events carry `lastTimestamp`; the newer events.k8s.io shape uses
+    `eventTime`. `firstTimestamp` is the last resort for an event that has
+    only ever fired once. Returns None when none parse, and the caller treats
+    an undateable event as stale — the safe direction, since the failure is a
+    visible timeout rather than a run that starts against an unbroken cluster.
+    """
+    for key in ("lastTimestamp", "eventTime", "firstTimestamp"):
+        raw = event.get(key)
+        if not raw:
+            continue
+        try:
+            parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return None
+
+
 class LabHandle:
     def __init__(
         self,
@@ -100,6 +122,7 @@ class LabHandle:
         kube_version: str = "1.31.2",
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         log_query_builder: LogContainsQueryBuilder = loki_log_contains_query,
     ) -> None:
         self.workspace = workspace
@@ -111,6 +134,7 @@ class LabHandle:
         self.kube_version = kube_version
         self._clock = clock
         self._sleep = sleep
+        self._wall_clock = wall_clock
         self._log_query_builder = log_query_builder
         self._known_good_sha: str | None = None
 
@@ -166,10 +190,16 @@ class LabHandle:
     # -- symptom probe ------------------------------------------------------
 
     def wait_for_symptom(self, probe: SymptomProbe, scope: Scope) -> None:
+        # Anchored to when *this* wait began, so an `event_reason` probe cannot
+        # be satisfied by an event a previous iteration left behind. Kubernetes
+        # retains events for about an hour, which is far longer than a sweep's
+        # iteration, and the stale match made quota-conflict start before Argo
+        # had applied its break (see evals/reports/cheap-baseline/diagnosis.md).
+        since = self._wall_clock()
         deadline = self._clock() + probe.timeout_s
         last_observed: str | bool = "no matching pod seen"
         while self._clock() < deadline:
-            observed = self._probe_once(probe, scope)
+            observed = self._probe_once(probe, scope, since)
             if observed is True:
                 return
             last_observed = observed
@@ -179,7 +209,7 @@ class LabHandle:
             f"for {scope.namespace}/{scope.app}; last observed: {last_observed}"
         )
 
-    def _probe_once(self, probe: SymptomProbe, scope: Scope) -> bool | str:
+    def _probe_once(self, probe: SymptomProbe, scope: Scope, since: datetime) -> bool | str:
         selector = f"app.kubernetes.io/name={scope.app}"
         if probe.kind == "pod_waiting_reason":
             return self._container_state_reason(scope, selector, "waiting", probe.value)
@@ -189,10 +219,21 @@ class LabHandle:
             return self._pod_condition(scope, selector, probe.condition_type, probe.value)
         if probe.kind == "event_reason":
             events = self.kube.list_events(scope.namespace)
-            reasons = [str(e.get("reason", "")) for e in events]
-            if any(probe.value in reason for reason in reasons):
+            fresh = []
+            for event in events:
+                at = _event_at(event)
+                if at is not None and at >= since:
+                    fresh.append(event)
+            if any(probe.value in str(e.get("reason", "")) for e in fresh):
                 return True
-            return f"event reasons seen: {reasons[-10:]}" if reasons else False
+            stale = len(events) - len(fresh)
+            seen = [str(e.get("reason", "")) for e in fresh][-10:]
+            if seen:
+                return f"fresh event reasons: {seen}"
+            # Naming the stale count matters: "no events" and "only events
+            # older than this iteration" are very different diagnoses when a
+            # probe times out.
+            return f"no events since this iteration began ({stale} older ignored)"
         if probe.kind == "log_contains":
             return self._log_contains(scope, probe.value)
         raise ValueError(f"unknown symptom probe kind {probe.kind!r}")
