@@ -7,10 +7,15 @@ expected_outcome: pr
 symptom_probe:
   kind: event_reason
   value: FailedCreate
-  # 120s, not the 60s this carried before M14: that budget was only ever
+  # 180s, not the 60s this carried before M14. That budget was only ever
   # sufficient because the probe matched FailedCreate events left by earlier
-  # iterations and returned instantly. Waiting honestly means Argo has to sync
-  # the break, the ReplicaSet has to attempt creation, and the quota has to
-  # reject it — one step more than the pod-state probes that use 90s.
-  timeout_s: 120
+  # iterations and returned instantly; once the probe was time-bounded the
+  # scenario started timing out. Measured directly: after a break is pushed,
+  # Argo syncs at ~51-61s and FailedCreate follows immediately. 120s still
+  # timed out 3/5 in a sweep, because back-to-back iterations leave Argo
+  # reconciling the *previous* reset when the next break lands, costing an
+  # extra cycle. 180s covers both. The race itself is the real defect —
+  # waiting for Synced after reset would remove it rather than pad around it;
+  # tracked in IMPLEMENTATION_PLAN.md rather than fixed here.
+  timeout_s: 180
 tags: [quota, scheduling]

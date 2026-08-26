@@ -142,3 +142,39 @@ against the main tier before changing anything.
 What this sweep should *not* trigger: prompt edits aimed at the four low
 scenarios. Three are not the model's fault, and the fourth is a property we
 deliberately measure rather than optimise.
+
+
+---
+
+## Post-diagnosis outcome (2026-08-26)
+
+Acting on §1 uncovered a third bug behind the two named above, and the
+efficacy gap in §2 was escalated rather than patched.
+
+- **1a fixed** — probes are time-anchored to the start of their own wait. The
+  next sweep reported `"96 older ignored"`, confirming both the bug and the
+  fix. Timeout raised 60s → 180s from a measurement: Argo syncs a pushed break
+  at ~51-61s, and back-to-back sweep iterations add a reconcile cycle.
+- **1b fixed** — headroom takes `max(live_usage, desired_by_others)`. The gate
+  now rejects `replicaCount: 4` and the model self-corrects to 3.
+- **New: the loop detector was defeatable by re-wording prose.** Invisible
+  until 1a/1b were fixed. A run proposed byte-identical files nine times,
+  varying only `rationale`; the signature hashed the prose, so no streak ever
+  formed and the run burned its whole budget. Signatures now key on effectful
+  arguments only — `budget_exhausted` → `loop_detected`, 15.0 → 10.5
+  iterations, $0.07 → $0.05. The easy reading was "raise max_iterations",
+  which would have buried a defect affecting any tool that mixes effectful
+  arguments with free text.
+- **§2 escalated, not patched** — `docs/design/efficacy-verification.md` shows
+  why no static check can close it and folds it into M16. `validate_change`'s
+  contract now states plainly what it does not verify.
+
+`quota-conflict` remains 0/5. The residue is the reset/break reconcile race
+and the model not calling `validate_change` after a correct proposal — both
+characterised, neither a scoring problem. Removing the race (wait for Argo
+`Synced` after reset rather than padding timeouts) is the outstanding work.
+
+**This scenario's number got worse, and that is the correct outcome.** Its
+former 1/5 rested on a gate that waved through over-quota changes and a probe
+satisfied by stale events. Reverting either fix would restore the number and
+the wrongness together.

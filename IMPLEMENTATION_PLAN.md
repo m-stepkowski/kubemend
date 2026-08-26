@@ -270,6 +270,16 @@ Accept: a deliberately-broken validator dependency (e.g. stale token) produces a
 
    Also: **zero `infra_error` iterations**, so item 1's classifier got no field exercise here. Correct-by-construction and unit-tested, not field-validated — recorded as such rather than claimed.
 
+**Post-baseline fixes (2026-08-26).** Chasing `quota-conflict` from 1/5 uncovered three harness bugs, each hidden behind the previous — the reason the diagnosis was written before any prompt was touched:
+
+1. **Quota headroom trusted a transient reading.** A starved co-tenant drove `used_pods - own_replicas` to 0, so `replicaCount: 4` was approved against `hard.pods: 4` four times in five. Now takes `max(live_usage, desired_by_others)`. Confirmed fixed: the gate now rejects 4 and the model self-corrects to 3.
+2. **The symptom probe matched stale events.** `event_reason` had no time bound and Kubernetes retains events ~1h, so every iteration after the first started before Argo applied its break — reproduced against a reset, healthy cluster. Probes are now anchored to when the wait began; the sweep afterwards reported "96 older ignored", direct proof. Timeout raised 60s → 180s, from a measurement (Argo syncs at ~51-61s; back-to-back iterations cost an extra reconcile cycle) rather than a guess.
+3. **The loop detector was defeated by re-worded prose.** Only visible once (1) and (2) were fixed. A run proposed byte-identical file content nine times, varying only `rationale`, and spun until its budget died — the signature hashed the prose, so the streak never formed. No adversarial model needed. Signatures now key on effectful arguments only. Confirmed: `budget_exhausted` → `loop_detected`, iterations 15.0 → 10.5, cost $0.07 → $0.05.
+
+The easy reading of (3) was "raise `max_iterations`", which would have hidden a general harness defect affecting any tool mixing effectful arguments with free text.
+
+`quota-conflict` still reports 0/5: the remaining failures are the reset/break reconcile race described above, plus the model not calling `validate_change` after a correct proposal. Both are characterised, neither is a scoring problem. **Removing the reset race properly — waiting for Argo `Synced` after reset instead of padding timeouts — is the outstanding work**, and is a runner change affecting every scenario.
+
 **Accept:** partially met. The `infra_error` path is implemented and unit-proven but unexercised by a real sweep; the baseline is committed with verified pricing, but is a *pre-fix* baseline and should be re-run once the two `quota-conflict` bugs are fixed. Those fixes are the natural next work.
 
 ## M15 — Observability-provider eval parity, grafana_cloud first (1–2 sessions)
@@ -280,7 +290,11 @@ Scope: run the existing 9-scenario suite end-to-end through `provider: grafana_c
 
 Accept: a committed small-n sweep on `grafana_cloud` with pass rates comparable to the `prometheus_loki` baseline (differences explained, not hidden); the probe/checker layer provider-neutral by injection, not by per-provider forks of the runner; the Alloy pipeline hardened through repeated real use (closing the "validated once against one account" caveat in `docs/knowledge/lab-and-evals.md`).
 
-## M16 — Sandbox execution substrate (multi-session; design doc first)
+## M16 — Sandbox execution substrate + efficacy verification (multi-session; design doc first)
+
+**Efficacy verification folded in 2026-08-26** (`docs/design/efficacy-verification.md`). The M14 baseline showed the gate verifies *safety and well-formedness*, never *efficacy*: `fix-needs-template-change` was reported `verified` 3/5 times for values edits that cannot fix a template-level fault, and half of `bad-env-endpoint`'s failures are the same shape. No static check can close it — the design doc works through four candidate static fixes and shows each fails on that scenario, because efficacy is a claim about runtime behaviour that manifest inspection cannot settle. The only sound design is apply-to-a-disposable-namespace and re-probe the symptom, which needs cluster write access and therefore *requires* this milestone's sandbox rather than racing it. It also gives M16 a falsifiable acceptance criterion it lacked: `fix-needs-template-change` reaching a reliable handoff with no prompt change.
+
+
 
 Per-run isolated tool execution replacing direct executor calls (the Option A platform work: agent-sandbox + a Kyverno pack, Go controllers) — then chart-editing behind a new risk gate. Still the right next *big* bet: chart-editing is gated on it, and M8b's operator raised the autonomy level enough that execution isolation now buys real risk reduction, not just hygiene. But the first session's deliverable is a **design doc + threat-model delta**, not code, answering: (a) what exactly is isolated, and where the trust boundary sits between sandbox and gate; (b) the constraint that the sandbox must sit behind the existing `registry.execute()` seam — if the design requires restructuring `core/loop.py`, that is the CLAUDE.md rule-7 design-discussion trigger firing, and the design is wrong; (c) an honest evaluation of whether chart-editing strictly requires full M16, or whether a narrower risk gate (widened `writable_globs` + a mandatory-human-review path + a stricter Kyverno pack for chart-touching PRs, all atop the existing render/policy/diff gate) could ship it a milestone earlier, with the sandbox following as defense-in-depth. KubeCon-CFP-scale work; each phase its own blog post.
 
