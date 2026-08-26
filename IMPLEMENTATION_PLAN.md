@@ -270,16 +270,6 @@ Accept: a deliberately-broken validator dependency (e.g. stale token) produces a
 
    Also: **zero `infra_error` iterations**, so item 1's classifier got no field exercise here. Correct-by-construction and unit-tested, not field-validated — recorded as such rather than claimed.
 
-**Post-baseline fixes (2026-08-26).** Chasing `quota-conflict` from 1/5 uncovered three harness bugs, each hidden behind the previous — the reason the diagnosis was written before any prompt was touched:
-
-1. **Quota headroom trusted a transient reading.** A starved co-tenant drove `used_pods - own_replicas` to 0, so `replicaCount: 4` was approved against `hard.pods: 4` four times in five. Now takes `max(live_usage, desired_by_others)`. Confirmed fixed: the gate now rejects 4 and the model self-corrects to 3.
-2. **The symptom probe matched stale events.** `event_reason` had no time bound and Kubernetes retains events ~1h, so every iteration after the first started before Argo applied its break — reproduced against a reset, healthy cluster. Probes are now anchored to when the wait began; the sweep afterwards reported "96 older ignored", direct proof. Timeout raised 60s → 180s, from a measurement (Argo syncs at ~51-61s; back-to-back iterations cost an extra reconcile cycle) rather than a guess.
-3. **The loop detector was defeated by re-worded prose.** Only visible once (1) and (2) were fixed. A run proposed byte-identical file content nine times, varying only `rationale`, and spun until its budget died — the signature hashed the prose, so the streak never formed. No adversarial model needed. Signatures now key on effectful arguments only. Confirmed: `budget_exhausted` → `loop_detected`, iterations 15.0 → 10.5, cost $0.07 → $0.05.
-
-The easy reading of (3) was "raise `max_iterations`", which would have hidden a general harness defect affecting any tool mixing effectful arguments with free text.
-
-`quota-conflict` still reports 0/5: the remaining failures are the reset/break reconcile race described above, plus the model not calling `validate_change` after a correct proposal. Both are characterised, neither is a scoring problem. **Removing the reset race properly — waiting for Argo `Synced` after reset instead of padding timeouts — is the outstanding work**, and is a runner change affecting every scenario.
-
 **Accept:** partially met. The `infra_error` path is implemented and unit-proven but unexercised by a real sweep; the baseline is committed with verified pricing, but is a *pre-fix* baseline and should be re-run once the two `quota-conflict` bugs are fixed. Those fixes are the natural next work.
 
 ## M15 — Observability-provider eval parity, grafana_cloud first (1–2 sessions)
