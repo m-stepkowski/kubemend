@@ -564,6 +564,26 @@ class Validator:
             return CheckResult("quota", False, f"could not check live quota headroom: {exc}")
         return CheckResult("quota", True, "proposed replica counts fit within live quota headroom")
 
+    def _desired_by_others(self, namespace: str, exclude: str) -> int:
+        """Pods every *other* workload in the namespace intends to run.
+
+        Read from `spec.replicas` rather than live pod counts precisely
+        because the live counts are what a quota fight distorts.
+        """
+        total = 0
+        for kind in ("deployment", "statefulset"):
+            try:
+                workloads = self.kube.list_resource(kind, namespace) if self.kube else []
+            except ToolError:
+                # A kind this identity cannot list contributes nothing rather
+                # than failing the stage: the live-usage term still applies.
+                continue
+            for workload in workloads:
+                if (workload.get("metadata") or {}).get("name") == exclude:
+                    continue
+                total += int((workload.get("spec") or {}).get("replicas", 0) or 0)
+        return total
+
     def _quota_headroom(self, namespace: str, name: str, proposed: int) -> CheckResult | None:
         assert self.kube is not None  # narrowed by the caller
         for quota in self.kube.list_resource("resourcequota", namespace):
@@ -586,7 +606,21 @@ class Validator:
                 # Not live yet (first-ever proposal for this app) — nothing of
                 # its own to subtract from the quota's current usage.
                 current_replicas = 0
-            other_usage = used_pods - current_replicas
+            # Live usage alone is not trustworthy here. In the broken state a
+            # runaway workload can win the race for every pod slot and starve
+            # its co-tenants to zero, at which point `used_pods -
+            # current_replicas` reads 0 and an over-quota proposal looks like
+            # it fits — approving a change that re-starves the co-tenant the
+            # moment it recovers. Found by the M14 baseline sweep
+            # (evals/reports/cheap-baseline/diagnosis.md), where it passed
+            # replicaCount=4 against hard.pods=4 four times out of five.
+            #
+            # So take the worse of what the namespace *is* running and what it
+            # *intends* to: neither a starved co-tenant nor a spec Argo has
+            # not yet applied can flatter the check.
+            other_usage = max(
+                used_pods - current_replicas, self._desired_by_others(namespace, name)
+            )
             projected = other_usage + proposed
             hard_pods_int = int(hard_pods)
             if projected > hard_pods_int:

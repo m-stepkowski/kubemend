@@ -279,6 +279,15 @@ Executor: enforce `writable_globs` per path (any violation ⇒ `path_not_writabl
 
 ## validate_change  (tier: verify, timeout 120s)
 
+**What this does not check.** The stages below establish that a proposal is
+*safe and well-formed* — it renders, breaks no policy, changes something real,
+stays in scope, fits the quota. None of them establishes that it **fixes the
+incident**. A values edit can satisfy all five and leave the fault untouched;
+the M14 baseline saw exactly that 3 times in 5 on `fix-needs-template-change`.
+Read `verified` as "this change is safe to review", never "this change works".
+Closing the gap needs apply-and-re-probe against a disposable namespace —
+`docs/design/efficacy-verification.md`, folded into M16.
+
 ```json
 {"name": "validate_change",
  "description": "Validate the current proposal branch: helm render, Kyverno policy check, live diff, scope check, and live quota headroom. Returns per-check pass/fail with details. Use this to self-check before declaring the task done; the harness will re-run it independently anyway.",

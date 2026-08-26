@@ -420,7 +420,9 @@ class FakeKube:
         quotas: list[dict[str, object]] | None = None,
         live_replicas: int | None = 2,
         live_spec_replicas: int | None = None,
+        siblings: list[dict[str, object]] | None = None,
     ) -> None:
+        self.siblings = siblings or []
         self.quotas = quotas or []
         self.live_replicas = live_replicas
         # Only set for the spec-vs-status regression test: a Deployment whose
@@ -435,7 +437,11 @@ class FakeKube:
         self, kind: str, namespace: str, selector: str | None = None
     ) -> list[dict[str, object]]:
         self.list_resource_calls.append((kind, namespace))
-        return self.quotas if kind == "resourcequota" else []
+        if kind == "resourcequota":
+            return self.quotas
+        if kind == "deployment":
+            return self.siblings
+        return []
 
     def get_resource(self, kind: str, namespace: str, name: str) -> dict[str, object]:
         self.get_resource_calls.append((kind, namespace, name))
