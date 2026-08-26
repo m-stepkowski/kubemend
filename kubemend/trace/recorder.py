@@ -37,7 +37,8 @@ def _verdict_dict(verdict: Verdict) -> Event:
     return {
         "passed": verdict.passed,
         "checks": [
-            {"name": c.name, "passed": c.passed, "detail": c.detail} for c in verdict.checks
+            {"name": c.name, "passed": c.passed, "detail": c.detail, "infra_error": c.infra_error}
+            for c in verdict.checks
         ],
         "diff_summary": (
             [list(r) for r in verdict.diff_summary.resources] if verdict.diff_summary else None

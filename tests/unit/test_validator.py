@@ -25,6 +25,7 @@ from kubemend.core.model import Scope
 from kubemend.tools.gitops.validator import (
     CommandResult,
     Validator,
+    classify_infra_error,
     out_of_scope,
     parse_resources,
 )
@@ -773,3 +774,81 @@ def test_split_mode_without_argocd_has_no_kubectl_fallback(tmp_path: Path) -> No
     assert diff.passed is False
     assert "no kubectl fallback" in diff.detail
     assert not any(c[0] == "/pinned/kubectl" for c in runner.calls)
+
+
+# -- infra vs model failure classification (M14) --------------------------
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        # Both observed in this lab: a `helm upgrade` on Argo CD invalidates
+        # the cached session mid-run.
+        "rpc error: code = Unauthenticated desc = invalid session: Token is expired",
+        "FATA[0000] rpc error: code = Unauthenticated desc = no session information",
+        "dial tcp 127.0.0.1:8080: connect: connection refused",
+        "Get https://argocd: dial tcp: lookup argocd: no such host",
+        "context deadline exceeded",
+    ],
+)
+def test_broken_dependencies_are_classified_as_infra(stderr: str) -> None:
+    assert classify_infra_error(stderr) is True
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        # A real disagreement must never be excused as infra: doing so removes
+        # it from the pass rate and flatters the harness.
+        "error: application shop-api not found",
+        "rendered manifests contain a resource that already exists",
+        "Error: template: shop-api/templates/deployment.yaml:12: nil pointer",
+        "the diff produced no output",
+        "",
+    ],
+)
+def test_real_failures_are_never_excused_as_infra(stderr: str) -> None:
+    assert classify_infra_error(stderr) is False
+
+
+def test_an_expired_argocd_token_produces_an_infra_flagged_diff_check(tmp_path: Path) -> None:
+    """M14 acceptance: a deliberately-broken validator dependency must be
+    distinguishable from a proposal that genuinely failed to diff."""
+    runner = _rendering_runner(
+        argocd=CommandResult(
+            20, stderr="rpc error: code = Unauthenticated desc = invalid session: Token is expired"
+        )
+    )
+
+    verdict = _argo_validator(runner, tmp_path).validate(["shop-api"])
+
+    diff = next(c for c in verdict.checks if c.name == "diff")
+    assert diff.passed is False
+    assert diff.infra_error is True
+    assert diff.detail.startswith("infra_error:")
+    assert verdict.infra_error is True
+
+
+def test_a_genuine_diff_failure_is_not_flagged_as_infra(tmp_path: Path) -> None:
+    runner = _rendering_runner(
+        argocd=CommandResult(20, stderr="error: application shop-api not found")
+    )
+
+    verdict = _argo_validator(runner, tmp_path).validate(["shop-api"])
+
+    diff = next(c for c in verdict.checks if c.name == "diff")
+    assert diff.passed is False
+    assert diff.infra_error is False
+    assert verdict.infra_error is False
+
+
+def test_an_infra_flagged_detail_still_redacts_the_token(tmp_path: Path) -> None:
+    runner = _rendering_runner(
+        argocd=CommandResult(20, stderr="Unauthenticated: --auth-token jwt-token rejected")
+    )
+
+    verdict = _argo_validator(runner, tmp_path).validate(["shop-api"])
+
+    diff = next(c for c in verdict.checks if c.name == "diff")
+    assert diff.infra_error is True
+    assert "jwt-token" not in diff.detail

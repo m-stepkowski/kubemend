@@ -45,6 +45,17 @@ class IterationResult:
     def passed(self) -> bool:
         return self.check is not None and self.check.passed
 
+    @property
+    def infra_error(self) -> bool:
+        """The gate could not do its job — a dependency was broken (M14).
+
+        Such an iteration says nothing about the model, so `_summarize` keeps
+        it out of the denominator entirely rather than scoring it zero.
+        """
+        return self.run_result is not None and (
+            self.run_result.verdict is not None and self.run_result.verdict.infra_error
+        )
+
 
 @dataclass(frozen=True)
 class ScenarioSummary:
@@ -55,10 +66,26 @@ class ScenarioSummary:
     mean_cost_usd: float
     p95_wall_seconds: float
     failures: list[str] = field(default_factory=list)
+    # Iterations the gate could not judge because a dependency broke (M14).
+    # Counted and reported, never scored — see `pass_rate`.
+    infra_errors: int = 0
+
+    @property
+    def scored(self) -> int:
+        """Iterations that actually say something about the model."""
+        return self.n - self.infra_errors
 
     @property
     def pass_rate(self) -> float:
-        return self.passed / self.n if self.n else 0.0
+        """Pass rate over *scored* iterations.
+
+        Infra failures leave the denominator rather than scoring zero: a run
+        where the model proposed the right fix and the gate could not check it
+        is not evidence against the model. They stay visible via
+        `infra_errors` so a sweep can never quietly shrink to one lucky
+        iteration without someone noticing.
+        """
+        return self.passed / self.scored if self.scored else 0.0
 
 
 @dataclass(frozen=True)
@@ -174,10 +201,15 @@ def _summarize(name: str, its: list[IterationResult]) -> ScenarioSummary:
         else 0.0
     )
     wall_values = [it.wall_seconds for it in its]
+    infra_errors = sum(1 for it in its if it.infra_error)
     failures = []
     for it in its:
         if it.error:
             failures.append(f"symptom/harness error: {it.error}")
+        elif it.infra_error:
+            # Reported, but distinct from a model failure — the reader has to
+            # be able to tell "the harness was broken" from "the model was".
+            failures.append(f"infra_error (excluded from pass rate): {_infra_detail(it)}")
         elif it.check is not None and not it.check.passed:
             failures.append(it.check.detail)
     return ScenarioSummary(
@@ -188,7 +220,15 @@ def _summarize(name: str, its: list[IterationResult]) -> ScenarioSummary:
         mean_cost_usd=mean_cost,
         p95_wall_seconds=_p95(wall_values),
         failures=failures,
+        infra_errors=infra_errors,
     )
+
+
+def _infra_detail(iteration: IterationResult) -> str:
+    verdict = iteration.run_result.verdict if iteration.run_result else None
+    if verdict is None:
+        return "unknown"
+    return next((c.detail for c in verdict.checks if c.infra_error), "unknown")
 
 
 def _p95(values: list[float]) -> float:
@@ -210,15 +250,21 @@ def render_report_md(report: SweepReport) -> str:
         "",
         f"model: {report.model}",
         "",
-        "| scenario | pass | iters (avg) | cost (avg) | p95 wall |",
-        "|---|---|---|---|---|",
+        "| scenario | pass | infra | iters (avg) | cost (avg) | p95 wall |",
+        "|---|---|---|---|---|---|",
     ]
     for s in report.summaries:
+        # `passed/scored`, not `passed/n` — an infra failure is not a model
+        # failure, so it leaves the denominator and shows in its own column.
+        infra = str(s.infra_errors) if s.infra_errors else "—"
         lines.append(
-            f"| {s.scenario} | {s.passed}/{s.n} | {s.mean_iterations:.1f} | "
+            f"| {s.scenario} | {s.passed}/{s.scored} | {infra} | {s.mean_iterations:.1f} | "
             f"${s.mean_cost_usd:.2f} | {s.p95_wall_seconds:.0f}s |"
         )
-    triage = [s for s in report.summaries if s.n and s.pass_rate < 0.5]
+    # Only scenarios with something actually scored can be below 50%: a
+    # scenario whose every iteration hit infra trouble needs the lab fixed,
+    # not a prompt diagnosis.
+    triage = [s for s in report.summaries if s.scored and s.pass_rate < 0.5]
     if triage:
         lines += ["", "## Below 50% — needs a written diagnosis before any prompt change", ""]
         for s in triage:
@@ -236,6 +282,8 @@ def render_report_json(report: SweepReport) -> str:
             {
                 "scenario": s.scenario,
                 "n": s.n,
+                "scored": s.scored,
+                "infra_errors": s.infra_errors,
                 "passed": s.passed,
                 "pass_rate": s.pass_rate,
                 "mean_iterations": s.mean_iterations,

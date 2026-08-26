@@ -40,6 +40,37 @@ Resource = tuple[str, str, str]
 # documents it to a user writing kubemend.yaml.
 DEFAULT_APP_DIR_TEMPLATE = "apps/{app}"
 
+# Substrings that mean "the diff never ran", not "the diff disagreed" (M14).
+# Drawn from failures actually observed in this lab rather than invented: an
+# Argo CD session invalidated by a `helm upgrade` mid-session produced the
+# first two, and a server not yet port-forwarded the rest.
+_INFRA_MARKERS = (
+    "unauthenticated",
+    "invalid session",
+    "token is expired",
+    "connection refused",
+    "no such host",
+    "dial tcp",
+    "i/o timeout",
+    "context deadline exceeded",
+    "eof",
+    "server is unavailable",
+    "permission denied",
+)
+
+
+def classify_infra_error(stderr: str) -> bool:
+    """Is this stderr a broken dependency rather than a real check failure?
+
+    Deliberately narrow and substring-based. The cost asymmetry decides the
+    shape: calling a genuine model failure `infra_error` *removes* it from the
+    pass rate and flatters the harness, while missing one merely records a
+    pessimistic number. So this only matches transport and authentication
+    phrasing, never anything a diff mismatch could produce.
+    """
+    lowered = stderr.lower()
+    return any(marker in lowered for marker in _INFRA_MARKERS)
+
 
 @dataclass(frozen=True)
 class CommandResult:
@@ -422,10 +453,19 @@ class Validator:
                 # in some errors. Check details reach the model's context and the
                 # PR body, so it has to come out here.
                 detail = result.stderr.strip().replace(self.argocd_token, "***")
+                infra = classify_infra_error(result.stderr)
                 return "", CheckResult(
                     name="diff",
                     passed=False,
-                    detail=(detail[:400] or f"argocd diff failed for {app}"),
+                    detail=(
+                        # Prefixed as well as flagged: the flag is what the eval
+                        # runner reads, the prefix is what a human reading a PR
+                        # body or a trace sees first.
+                        f"infra_error: {detail[:400]}"
+                        if infra
+                        else (detail[:400] or f"argocd diff failed for {app}")
+                    ),
+                    infra_error=infra,
                 )
             chunks.append(result.stdout)
 
