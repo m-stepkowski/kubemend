@@ -243,6 +243,12 @@ class FakeLab:
         self._current_scenario = patch_path.parent.name
         self.calls.append(f"apply_break:{self._current_scenario}")
 
+    def wait_for_sync(self, app: str, *, healthy: bool, timeout_s: int = 180) -> None:
+        self.calls.append(f"wait_for_sync:{'healthy' if healthy else 'synced'}")
+
+    def preflight(self) -> None:
+        self.calls.append("preflight")
+
     def wait_for_symptom(self, probe: SymptomProbe, scope: Scope) -> None:
         if self._current_scenario in self.timeout_on:
             raise SymptomTimeout(f"{self._current_scenario} never manifested")
@@ -300,11 +306,15 @@ def test_run_sweep_follows_reset_break_wait_run_check_reset_per_iteration(
     per_iteration = lab.calls[1:]
     assert per_iteration == [
         "reset",
+        "wait_for_sync:healthy",
         "apply_break:s1",
+        "wait_for_sync:synced",
         "wait_for_symptom",
         "reset",
         "reset",
+        "wait_for_sync:healthy",
         "apply_break:s1",
+        "wait_for_sync:synced",
         "wait_for_symptom",
         "reset",
     ]
@@ -356,7 +366,14 @@ def test_run_sweep_resets_even_when_the_symptom_never_manifests(
 
     run_sweep(["flaky"], 1, RunConfig(), llm=FakeLLM([]), lab=lab, scenarios_root=tmp_path)
 
-    assert lab.calls == ["snapshot", "reset", "apply_break:flaky", "reset"]
+    assert lab.calls == [
+        "snapshot",
+        "reset",
+        "wait_for_sync:healthy",
+        "apply_break:flaky",
+        "wait_for_sync:synced",
+        "reset",
+    ]
 
 
 def test_run_sweep_resets_even_when_execute_incident_raises(
@@ -377,7 +394,15 @@ def test_run_sweep_resets_even_when_execute_incident_raises(
     with pytest.raises(RuntimeError, match="boom"):
         run_sweep(["s1"], 1, RunConfig(), llm=FakeLLM([]), lab=lab, scenarios_root=tmp_path)
 
-    assert lab.calls == ["snapshot", "reset", "apply_break:s1", "wait_for_symptom", "reset"]
+    assert lab.calls == [
+        "snapshot",
+        "reset",
+        "wait_for_sync:healthy",
+        "apply_break:s1",
+        "wait_for_sync:synced",
+        "wait_for_symptom",
+        "reset",
+    ]
 
 
 # -- infra errors leave the denominator (M14) ------------------------------

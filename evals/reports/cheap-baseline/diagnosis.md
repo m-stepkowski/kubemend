@@ -142,3 +142,32 @@ against the main tier before changing anything.
 What this sweep should *not* trigger: prompt edits aimed at the four low
 scenarios. Three are not the model's fault, and the fourth is a property we
 deliberately measure rather than optimise.
+
+
+## Sync-wait outcome (2026-08-26)
+
+`wait_for_sync` (Argo reconcile waits replacing padded probe timeouts) moved
+`quota-conflict` from 0/5 to **1/5 — but the 1 is now genuinely `verified`**,
+where the original pre-fix 1/5 rested on a gate that approved over-quota
+changes. Remaining: 2 `loop_detected`, 2 `SymptomTimeout`.
+
+Two hypotheses tested for the residual timeouts:
+
+- **`list_events` truncation — DISPROVED.** The suspicion was that `limit=200`
+  with no ordering could hide a fresh `FailedCreate` behind accumulated
+  events. Measured: 66 events returned, `FailedCreate` present. Not the cause.
+- **`argocd app wait --sync` is a no-op after a break — CONFIRMED as the
+  likely cause.** It returns as soon as sync status is `Synced`, and right
+  after a reset the app *is* Synced (to the reset revision). Argo has not yet
+  polled the break commit, so the wait returns instantly and the probe races
+  the poll interval exactly as before. The wait after *reset* (`--health`)
+  does real work; the wait after *break* does not.
+
+Fixing that properly means waiting for a *specific revision* rather than for
+"Synced", or forcing Argo to refresh after the push. The latter mutates
+cluster state from the harness — only an acceleration of what Argo will do
+from the same git commit, but a judgement call worth making explicitly rather
+than silently. Left unfixed and recorded here.
+
+`wait_for_sync` is kept regardless: the post-reset wait is genuine, timeouts
+dropped from 3/5 to 2/5, and the first honest `verified` appeared.

@@ -83,6 +83,8 @@ class Lab(Protocol):
     def snapshot(self) -> None: ...
     def reset(self) -> None: ...
     def apply_break(self, patch_path: Path, message: str) -> None: ...
+    def wait_for_sync(self, app: str, *, healthy: bool, timeout_s: int = 180) -> None: ...
+    def preflight(self) -> None: ...
     def wait_for_symptom(self, probe: SymptomProbe, scope: Scope) -> None: ...
     def render(self, app: str, namespace: str) -> str: ...
     def read_file(self, rel_path: str) -> str: ...
@@ -123,6 +125,10 @@ class LabHandle:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        argocd_bin: Path | None = None,
+        argocd_server: str = "",
+        argocd_token: str = "",
+        argocd_plaintext: bool = True,
         log_query_builder: LogContainsQueryBuilder = loki_log_contains_query,
     ) -> None:
         self.workspace = workspace
@@ -135,6 +141,10 @@ class LabHandle:
         self._clock = clock
         self._sleep = sleep
         self._wall_clock = wall_clock
+        self.argocd_bin = argocd_bin
+        self.argocd_server = argocd_server
+        self.argocd_token = argocd_token
+        self.argocd_plaintext = argocd_plaintext
         self._log_query_builder = log_query_builder
         self._known_good_sha: str | None = None
 
@@ -165,6 +175,82 @@ class LabHandle:
             repo.git.push(self.remote, self.base_branch, "--force")
         except GitCommandError as exc:
             raise RuntimeError(f"could not reset {self.base_branch}: {exc}") from exc
+
+    def preflight(self) -> None:
+        """Fail fast if the Argo credentials the sweep depends on are dead.
+
+        Without this an expired token surfaces once per iteration, as an
+        identical harness error, *after* the reset and break of each — five
+        wasted iterations and a report full of noise before anyone reads the
+        cause. Observed exactly that, which is why this exists.
+
+        Validates by doing the cheapest thing that genuinely exercises the
+        credential. `argocd account get-user-info` is deliberately not used:
+        it exits 0 for a garbage token and would validate nothing.
+        """
+        if self.argocd_bin is None:
+            return
+        cmd = [
+            str(self.argocd_bin),
+            "app",
+            "list",
+            "--server",
+            self.argocd_server,
+            "--auth-token",
+            self.argocd_token,
+        ]
+        if self.argocd_plaintext:
+            cmd.append("--plaintext")
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip().replace(self.argocd_token, "***")
+            raise RuntimeError(
+                "argocd credentials are not usable, so every iteration would fail "
+                f"identically before the model ran: {detail[:200]} — run `task lab:argocd-token`"
+            )
+
+    def wait_for_sync(self, app: str, *, healthy: bool, timeout_s: int = 180) -> None:
+        """Block until Argo has reconciled the current base-branch revision.
+
+        The eval protocol pushes to git and then immediately looks at the
+        cluster, which only works if Argo has caught up. Without this the
+        reset of one iteration is still reconciling when the next iteration's
+        break lands, so the symptom probe races a stale cluster — measured at
+        ~51-61s per reconcile, which is why `quota-conflict` timed out 3/5
+        even at a 120s probe budget.
+
+        `healthy=True` after a reset (the app should come back green);
+        `healthy=False` after a break, where waiting for health would time out
+        by design — only the *revision* needs to have landed.
+
+        A no-op when no argocd binary is wired in, so unit tests driving a
+        fake LabHandle need nothing extra.
+        """
+        if self.argocd_bin is None:
+            return
+        cmd = [
+            str(self.argocd_bin),
+            "app",
+            "wait",
+            app,
+            "--sync",
+            "--timeout",
+            str(timeout_s),
+            "--server",
+            self.argocd_server,
+            "--auth-token",
+            self.argocd_token,
+        ]
+        if healthy:
+            cmd.append("--health")
+        if self.argocd_plaintext:
+            cmd.append("--plaintext")
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            # Surfaced, never retried: a stuck sync is a lab fault the sweep
+            # should report rather than paper over (CLAUDE.md's no-retries rule).
+            detail = (result.stderr or result.stdout).strip().replace(self.argocd_token, "***")
+            raise RuntimeError(f"argocd app wait failed for {app}: {detail[:300]}")
 
     def apply_break(self, patch_path: Path, message: str) -> None:
         """Apply break.patch as a commit on the base branch and push it.
