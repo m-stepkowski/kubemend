@@ -160,14 +160,12 @@ def _run_one(
     started = clock()
     try:
         lab.reset()
-        # Let Argo finish reconciling the reset before breaking anything. Two
-        # pushes racing one reconcile loop is what made the symptom probe read
-        # a stale cluster, and padding probe timeouts only hid it.
-        lab.wait_for_sync(spec.scope.app, healthy=True)
+        lab.refresh_argo(spec.scope.app)
         lab.apply_break(scenarios_root / spec.name / "break.patch", f"break: inject {spec.name}")
-        # Then wait for the break itself to land — but not for health, which by
-        # design never returns for a deliberately broken app.
-        lab.wait_for_sync(spec.scope.app, healthy=False)
+        # Nudge Argo to re-read git rather than waiting out its poll interval:
+        # the protocol pushes and then immediately inspects the cluster, and
+        # that race is what produced SymptomTimeouts across scenarios.
+        lab.refresh_argo(spec.scope.app)
         lab.wait_for_symptom(spec.symptom_probe, spec.scope)
     except (SymptomTimeout, RuntimeError) as exc:
         lab.reset()

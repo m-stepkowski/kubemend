@@ -243,8 +243,8 @@ class FakeLab:
         self._current_scenario = patch_path.parent.name
         self.calls.append(f"apply_break:{self._current_scenario}")
 
-    def wait_for_sync(self, app: str, *, healthy: bool, timeout_s: int = 180) -> None:
-        self.calls.append(f"wait_for_sync:{'healthy' if healthy else 'synced'}")
+    def refresh_argo(self, app: str) -> None:
+        self.calls.append("refresh_argo")
 
     def preflight(self) -> None:
         self.calls.append("preflight")
@@ -306,15 +306,15 @@ def test_run_sweep_follows_reset_break_wait_run_check_reset_per_iteration(
     per_iteration = lab.calls[1:]
     assert per_iteration == [
         "reset",
-        "wait_for_sync:healthy",
+        "refresh_argo",
         "apply_break:s1",
-        "wait_for_sync:synced",
+        "refresh_argo",
         "wait_for_symptom",
         "reset",
         "reset",
-        "wait_for_sync:healthy",
+        "refresh_argo",
         "apply_break:s1",
-        "wait_for_sync:synced",
+        "refresh_argo",
         "wait_for_symptom",
         "reset",
     ]
@@ -369,9 +369,9 @@ def test_run_sweep_resets_even_when_the_symptom_never_manifests(
     assert lab.calls == [
         "snapshot",
         "reset",
-        "wait_for_sync:healthy",
+        "refresh_argo",
         "apply_break:flaky",
-        "wait_for_sync:synced",
+        "refresh_argo",
         "reset",
     ]
 
@@ -397,9 +397,9 @@ def test_run_sweep_resets_even_when_execute_incident_raises(
     assert lab.calls == [
         "snapshot",
         "reset",
-        "wait_for_sync:healthy",
+        "refresh_argo",
         "apply_break:s1",
-        "wait_for_sync:synced",
+        "refresh_argo",
         "wait_for_symptom",
         "reset",
     ]

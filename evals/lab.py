@@ -83,7 +83,7 @@ class Lab(Protocol):
     def snapshot(self) -> None: ...
     def reset(self) -> None: ...
     def apply_break(self, patch_path: Path, message: str) -> None: ...
-    def wait_for_sync(self, app: str, *, healthy: bool, timeout_s: int = 180) -> None: ...
+    def refresh_argo(self, app: str) -> None: ...
     def preflight(self) -> None: ...
     def wait_for_symptom(self, probe: SymptomProbe, scope: Scope) -> None: ...
     def render(self, app: str, namespace: str) -> str: ...
@@ -209,48 +209,44 @@ class LabHandle:
                 f"identically before the model ran: {detail[:200]} — run `task lab:argocd-token`"
             )
 
-    def wait_for_sync(self, app: str, *, healthy: bool, timeout_s: int = 180) -> None:
-        """Block until Argo has reconciled the current base-branch revision.
+    def refresh_argo(self, app: str) -> None:
+        """Make Argo re-read git now instead of waiting for its poll.
 
-        The eval protocol pushes to git and then immediately looks at the
-        cluster, which only works if Argo has caught up. Without this the
-        reset of one iteration is still reconciling when the next iteration's
-        break lands, so the symptom probe races a stale cluster — measured at
-        ~51-61s per reconcile, which is why `quota-conflict` timed out 3/5
-        even at a 120s probe budget.
+        The eval protocol pushes a commit and then immediately inspects the
+        cluster, so it is racing Argo's reconciliation interval. That race is
+        what produced `SymptomTimeout`s across unrelated scenarios.
 
-        `healthy=True` after a reset (the app should come back green);
-        `healthy=False` after a break, where waiting for health would time out
-        by design — only the *revision* needs to have landed.
+        An earlier attempt used `argocd app wait --sync`, which was measured
+        to be a **no-op**: it returns the moment sync status is `Synced`, and
+        right after a push the app is still Synced to the *previous* revision.
+        It neither helped nor hurt, and the apparent improvement attributed to
+        it was noise. `app get --hard-refresh` forces the repo re-read that
+        actually shortens the gap — measured 55s -> 26s from push to observable
+        symptom.
 
-        A no-op when no argocd binary is wired in, so unit tests driving a
-        fake LabHandle need nothing extra.
+        Deliberately a refresh, not `app sync`: this only makes Argo look at
+        git sooner, it applies nothing itself. The harness already causes
+        applies by pushing commits; this does not widen what it can do.
+
+        Best-effort. A failed refresh costs latency, not correctness — the
+        poll still happens — so it must not fail an otherwise good iteration.
         """
         if self.argocd_bin is None:
             return
         cmd = [
             str(self.argocd_bin),
             "app",
-            "wait",
+            "get",
             app,
-            "--sync",
-            "--timeout",
-            str(timeout_s),
+            "--hard-refresh",
             "--server",
             self.argocd_server,
             "--auth-token",
             self.argocd_token,
         ]
-        if healthy:
-            cmd.append("--health")
         if self.argocd_plaintext:
             cmd.append("--plaintext")
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if result.returncode != 0:
-            # Surfaced, never retried: a stuck sync is a lab fault the sweep
-            # should report rather than paper over (CLAUDE.md's no-retries rule).
-            detail = (result.stderr or result.stdout).strip().replace(self.argocd_token, "***")
-            raise RuntimeError(f"argocd app wait failed for {app}: {detail[:300]}")
+        subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
 
     def apply_break(self, patch_path: Path, message: str) -> None:
         """Apply break.patch as a commit on the base branch and push it.
