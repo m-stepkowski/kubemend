@@ -83,6 +83,8 @@ class Lab(Protocol):
     def snapshot(self) -> None: ...
     def reset(self) -> None: ...
     def apply_break(self, patch_path: Path, message: str) -> None: ...
+    def refresh_argo(self, app: str) -> None: ...
+    def preflight(self) -> None: ...
     def wait_for_symptom(self, probe: SymptomProbe, scope: Scope) -> None: ...
     def render(self, app: str, namespace: str) -> str: ...
     def read_file(self, rel_path: str) -> str: ...
@@ -123,6 +125,10 @@ class LabHandle:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        argocd_bin: Path | None = None,
+        argocd_server: str = "",
+        argocd_token: str = "",
+        argocd_plaintext: bool = True,
         log_query_builder: LogContainsQueryBuilder = loki_log_contains_query,
     ) -> None:
         self.workspace = workspace
@@ -135,6 +141,10 @@ class LabHandle:
         self._clock = clock
         self._sleep = sleep
         self._wall_clock = wall_clock
+        self.argocd_bin = argocd_bin
+        self.argocd_server = argocd_server
+        self.argocd_token = argocd_token
+        self.argocd_plaintext = argocd_plaintext
         self._log_query_builder = log_query_builder
         self._known_good_sha: str | None = None
 
@@ -165,6 +175,78 @@ class LabHandle:
             repo.git.push(self.remote, self.base_branch, "--force")
         except GitCommandError as exc:
             raise RuntimeError(f"could not reset {self.base_branch}: {exc}") from exc
+
+    def preflight(self) -> None:
+        """Fail fast if the Argo credentials the sweep depends on are dead.
+
+        Without this an expired token surfaces once per iteration, as an
+        identical harness error, *after* the reset and break of each — five
+        wasted iterations and a report full of noise before anyone reads the
+        cause. Observed exactly that, which is why this exists.
+
+        Validates by doing the cheapest thing that genuinely exercises the
+        credential. `argocd account get-user-info` is deliberately not used:
+        it exits 0 for a garbage token and would validate nothing.
+        """
+        if self.argocd_bin is None:
+            return
+        cmd = [
+            str(self.argocd_bin),
+            "app",
+            "list",
+            "--server",
+            self.argocd_server,
+            "--auth-token",
+            self.argocd_token,
+        ]
+        if self.argocd_plaintext:
+            cmd.append("--plaintext")
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip().replace(self.argocd_token, "***")
+            raise RuntimeError(
+                "argocd credentials are not usable, so every iteration would fail "
+                f"identically before the model ran: {detail[:200]} — run `task lab:argocd-token`"
+            )
+
+    def refresh_argo(self, app: str) -> None:
+        """Make Argo re-read git now instead of waiting for its poll.
+
+        The eval protocol pushes a commit and then immediately inspects the
+        cluster, so it is racing Argo's reconciliation interval. That race is
+        what produced `SymptomTimeout`s across unrelated scenarios.
+
+        An earlier attempt used `argocd app wait --sync`, which was measured
+        to be a **no-op**: it returns the moment sync status is `Synced`, and
+        right after a push the app is still Synced to the *previous* revision.
+        It neither helped nor hurt, and the apparent improvement attributed to
+        it was noise. `app get --hard-refresh` forces the repo re-read that
+        actually shortens the gap — measured 55s -> 26s from push to observable
+        symptom.
+
+        Deliberately a refresh, not `app sync`: this only makes Argo look at
+        git sooner, it applies nothing itself. The harness already causes
+        applies by pushing commits; this does not widen what it can do.
+
+        Best-effort. A failed refresh costs latency, not correctness — the
+        poll still happens — so it must not fail an otherwise good iteration.
+        """
+        if self.argocd_bin is None:
+            return
+        cmd = [
+            str(self.argocd_bin),
+            "app",
+            "get",
+            app,
+            "--hard-refresh",
+            "--server",
+            self.argocd_server,
+            "--auth-token",
+            self.argocd_token,
+        ]
+        if self.argocd_plaintext:
+            cmd.append("--plaintext")
+        subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
 
     def apply_break(self, patch_path: Path, message: str) -> None:
         """Apply break.patch as a commit on the base branch and push it.

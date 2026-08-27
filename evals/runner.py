@@ -160,7 +160,12 @@ def _run_one(
     started = clock()
     try:
         lab.reset()
+        lab.refresh_argo(spec.scope.app)
         lab.apply_break(scenarios_root / spec.name / "break.patch", f"break: inject {spec.name}")
+        # Nudge Argo to re-read git rather than waiting out its poll interval:
+        # the protocol pushes and then immediately inspects the cluster, and
+        # that race is what produced SymptomTimeouts across scenarios.
+        lab.refresh_argo(spec.scope.app)
         lab.wait_for_symptom(spec.symptom_probe, spec.scope)
     except (SymptomTimeout, RuntimeError) as exc:
         lab.reset()
@@ -334,12 +339,18 @@ def _build_lab(cfg: RunConfig) -> LabHandle:
 
     kube: KubeQuery = build_kube_client(cfg.kubernetes)
     loki: LogSearch = LokiProvider(cfg.observability.loki_url)
+    argocd_token_file = Path(cfg.argocd.token_file).expanduser()
     return LabHandle(
         workspace=Path(cfg.gitops.repo_path).expanduser().resolve(),
         base_branch=cfg.gitops.base_branch,
         kube=kube,
         loki=loki,
         helm_bin=(Path(".lab/bin") / "helm").resolve(),
+        # Same pinned binary and identity the validator's diff stage uses.
+        argocd_bin=(Path(".lab/bin") / "argocd").resolve(),
+        argocd_server=cfg.argocd.server,
+        argocd_token=(argocd_token_file.read_text().strip() if argocd_token_file.is_file() else ""),
+        argocd_plaintext=cfg.argocd.plaintext,
     )
 
 
@@ -397,6 +408,11 @@ def run(
         raise typer.Exit(code=1) from exc
 
     lab = _build_lab(cfg)
+    try:
+        lab.preflight()
+    except RuntimeError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
     report = run_sweep(names, n, cfg, llm=llm, lab=lab, log=lambda msg: typer.echo(f"-> {msg}"))
 
     report_dir.mkdir(parents=True, exist_ok=True)

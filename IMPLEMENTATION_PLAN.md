@@ -270,7 +270,22 @@ Accept: a deliberately-broken validator dependency (e.g. stale token) produces a
 
    Also: **zero `infra_error` iterations**, so item 1's classifier got no field exercise here. Correct-by-construction and unit-tested, not field-validated — recorded as such rather than claimed.
 
-**Accept:** partially met. The `infra_error` path is implemented and unit-proven but unexercised by a real sweep; the baseline is committed with verified pricing, but is a *pre-fix* baseline and should be re-run once the two `quota-conflict` bugs are fixed. Those fixes are the natural next work.
+**Accept (2026-08-27): items 1 and 2 met; item 3 not met, and deliberately not claimed.**
+
+The committed baseline exists, but is **not a trustworthy figure**. Two full sweeps produced 28/45 and 25/45 with no identifiable cause for the difference — the intervening harness change turned out to be inert, the cluster was healthy, and no scenario failed for a new reason. At n=5 against a live cluster with a deliberately weak model, +/-2 per scenario is inside the noise floor, and several intermediate conclusions in this milestone were read at exactly that resolution before this was recognised.
+
+Also unmet: the `infra_error` classifier has **never fired in a real sweep** (0 in both). It is unit-tested and correct by construction; it is not field-validated, and is recorded as such.
+
+What *is* verified, each independently and by measurement rather than by sweep score:
+- the pricing correction (checked against real billing);
+- the quota-headroom fix (gate now rejects the over-quota proposal it used to approve);
+- the loop-detector fix (byte-identical proposals now caught regardless of re-worded prose);
+- the credential preflight (an expired token now fails once, loudly, instead of burning every iteration);
+- `refresh_argo` (measured 55s -> 26s from push to observable symptom, removing the poll-interval race that produced cross-scenario `SymptomTimeout`s).
+
+**Outstanding to actually close item 3:** a sweep at higher n, or scenario probes that do not race reconciliation, run against the harness *including* `refresh_argo` — which no sweep has yet measured. Full reasoning in `evals/reports/cheap-baseline/diagnosis.md`.
+
+**Prior wording:** partially met. The `infra_error` path is implemented and unit-proven but unexercised by a real sweep; the baseline is committed with verified pricing, but is a *pre-fix* baseline and should be re-run once the two `quota-conflict` bugs are fixed. Those fixes are the natural next work.
 
 ## M15 — Observability-provider eval parity, grafana_cloud first (1–2 sessions)
 
