@@ -5,4 +5,4 @@ proposing Git changes to an Argo CD + Helm repository. See ARCHITECTURE.md for
 the full design; every module below carries a pointer to its section.
 """
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
